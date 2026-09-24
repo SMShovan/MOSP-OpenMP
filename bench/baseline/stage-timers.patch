@@ -1,0 +1,160 @@
+--- a/src/parallelCombinedGraph.cpp
++++ b/src/parallelCombinedGraph.cpp
+@@ -50,6 +50,7 @@
+ 
+ #include "parallelSOSPUpdate.h"
+ #include "read.h"
++#include "prof.h"
+ 
+ #include <omp.h>
+ 
+@@ -126,6 +127,9 @@
+   // ========================================================================
+ 
+   // --- 0a. Determine numberOfNodes from the CSR ---
++  const std::string PP0 = profPrefix();
++  StageTimer st(PP0 + "comb/");
++  st.begin("0a_read_full_csr_text_for_n");
+   Graph baseGraph;
+   int numberOfObjectives = 0;
+   if (!readCSR(originalCsrPrefix, baseGraph, numberOfObjectives)) {
+@@ -145,6 +149,7 @@
+   }
+ 
+   // --- 0b. Read K parent arrays ---
++  st.begin("0b_read_K_parent_files_text");
+   vector<vector<int>> parents(K);
+   for (int k = 0; k < K; ++k) {
+     if (!readParent(treeInputPaths[k], parents[k], numberOfNodes)) {
+@@ -162,6 +167,7 @@
+ 
+   // Outer loop over K trees is only size 3 (or small K) — parallelize the
+   // inner loop over vertices instead.
++  st.begin("1_membership_std_map_omp");
+   map<pair<int, int>, int>
+       edgeMembership; // edge → count of trees it appears in
+ 
+@@ -197,6 +203,8 @@
+   // ========================================================================
+ 
+   // Create the work directory
++  profCounter(PP0 + "comb/combined_edges") += edgeMembership.size();
++  st.begin("2_write_temp_files_text");
+   filesystem::create_directories(workDir);
+ 
+   // --- 2a. Write EMPTY base CSR (same vertex count, zero edges) ---
+@@ -334,9 +342,13 @@
+        << " (" << edgeMembership.size() << " edges, " << numberOfNodes
+        << " vertices)...\n";
+ 
+-  if (!parallelSOSPUpdate(
++  st.end();
++  profPrefix() = PP0 + "comb/";
++  bool okSosp = parallelSOSPUpdate(
+           tempCsrPrefix, blankDistPath, blankTreePath, insertPath, deletePath,
+-          /*objectiveIndex=*/0, source, distancesOutputPath, treeOutputPath)) {
++          /*objectiveIndex=*/0, source, distancesOutputPath, treeOutputPath);
++  profPrefix() = PP0;
++  if (!okSosp) {
+     cout << "Error: parallelSOSPUpdate failed on combined graph.\n";
+     return false;
+   }
+--- a/src/parallelSOSPUpdate.cpp
++++ b/src/parallelSOSPUpdate.cpp
+@@ -38,6 +38,7 @@
+ #include "parallelSOSPUpdate.h"
+ 
+ #include "read.h"
++#include "prof.h"
+ 
+ #include <omp.h>
+ 
+@@ -218,6 +219,9 @@
+                         int source, const string &distancesOutputPath,
+                         const string &treeOutputPath) {
+   const long long INF_VALUE = numeric_limits<long long>::max() / 4;
++  const std::string PP = profPrefix();
++  StageTimer st(PP + "sosp/");
++  st.begin("0a_read_csr_text");
+ 
+   // ========================================================================
+   // PHASE 0: PREPARATION (Sequential — I/O dominated)
+@@ -248,11 +252,13 @@
+   }
+ 
+   // --- 0b. Build forward and reverse adjacency lists ---
++  st.begin("0b_build_adjlists_host");
+   vector<vector<WeightedNeighbor>> outAdjacency;
+   vector<vector<WeightedNeighbor>> inAdjacency;
+   buildAdjacencyLists(originalGraph, objectiveIndex, outAdjacency, inAdjacency);
+ 
+   originalGraph.clear();
++  st.begin("0c_read_dist_tree_text");
+ 
+   // --- 0c. Read original distances and parent arrays ---
+   vector<long long> distances;
+@@ -267,6 +273,7 @@
+   }
+ 
+   // --- 0d. Read inserted and deleted edges ---
++  st.begin("0d_read_changes_text");
+   struct InsertedEdge {
+     int from;
+     int to;
+@@ -322,6 +329,7 @@
+   }
+ 
+   // --- 0e. Apply topological changes to adjacency lists (Sequential) ---
++  st.begin("0e_apply_changes_adjlist_host");
+   struct WeightIncrease {
+     int from;
+     int to;
+@@ -368,6 +376,7 @@
+   // PHASE 1: PROCESS CHANGED EDGES (Sequential — tiny batch, order-dependent)
+   // ========================================================================
+ 
++  st.begin("1_process_changed_edges_host");
+   // Use char arrays instead of bool vectors for atomic compare-exchange
+   vector<char> isAffected(numberOfNodes, 0);
+   vector<int> affectedVertices;
+@@ -458,6 +467,10 @@
+   // correctness — convergence to the global shortest-path optimum is
+   // guaranteed.
+ 
++  profCounter(PP + "sosp/initial_affected") += affectedVertices.size();
++  profCounter(PP + "sosp/n") += numberOfNodes;
++  st.begin("2d_propagate_loop_omp");
++  long long totCand = 0;
+   int iterationCount = 0;
+   const int maxIterations = numberOfNodes;
+ 
+@@ -509,6 +522,7 @@
+     }
+ 
+     affectedVertices.clear();
++    totCand += candidateVertices.size();
+ 
+     // --- 2b. Update distances of candidate vertices ---
+     // Each candidate v is unique (deduplicated above), so writes to
+@@ -558,10 +572,13 @@
+     }
+   }
+ 
++  profCounter(PP + "sosp/prop_iterations") += iterationCount;
++  profCounter(PP + "sosp/prop_total_candidates") += totCand;
+   if (iterationCount >= maxIterations && !affectedVertices.empty()) {
+     cout << "Warning: SOSP update reached maximum iteration limit ("
+          << maxIterations << "). Running reachability check.\n";
+   }
++  st.begin("3_bfs_reachability_omp");
+ 
+   // ========================================================================
+   // POST-PROCESSING: REACHABILITY CHECK (Parallel BFS)
+@@ -623,6 +640,7 @@
+   // ========================================================================
+   // WRITE OUTPUT (Sequential — I/O)
+   // ========================================================================
++  st.begin("5_write_output_text");
+ 
+   filesystem::path distOutPath(distancesOutputPath);
+   if (!distOutPath.parent_path().empty()) {

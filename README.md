@@ -38,7 +38,7 @@ rebuilds. For clangd and other IDE tooling, generate an (untracked)
 ## Threads and pinning
 
 Pin the threads for any timing: on a shared host, unpinned runs varied by
-more than 10x in the performance study.
+more than 10x.
 
 ```
 OMP_NUM_THREADS=28 OMP_PROC_BIND=close OMP_PLACES=cores bin/mosp ...
@@ -86,8 +86,10 @@ bin/mospPrep changes g/csr/graphCsr g/changes --changes 50000 --ins 50 --seed 77
 bin/mosp --graph g/csr/graphCsr --changes g/changes --init g/init --out out --validate
 ```
 
-`bench/prepare.sh` wraps the preparation and `bench/run.sh` repeats runs
-with pinned threads and reports medians.
+`bench/prepare.sh` wraps the preparation (optionally with a local
+batch), `bench/run.sh` repeats runs with pinned threads and reports
+medians, and `bench/baseline/` builds and times the original code of the
+tag `baseline-2026-09` the same way (see [results/](results/README.md)).
 
 ### bin/mosp
 

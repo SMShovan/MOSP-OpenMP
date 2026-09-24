@@ -1,9 +1,28 @@
 # Changes on `fix/correctness-perf`
 
 Branch point: `baseline-2026-09` (`7284f50`, "Code Refactored For Modularity
-and Readability."). Every commit builds and passes `make test`. MOSP-CUDA has
-the same fixes on its branch; both implementations now produce identical
-trees. Measurements: see [results/README.md](results/README.md).
+and Readability."). Every commit builds, and every commit from `c099516` on
+passes `make test`. The first commit (`da40a13`) predates the test target;
+until `d2d759a` the target ran with the default OpenMP thread count, which on
+a many-core, busy host can take more than 10 minutes, so test those commits
+with `OMP_NUM_THREADS=4` (the later default). MOSP-CUDA has the same fixes on
+its branch; both implementations now produce identical trees. Measurements:
+see [results/README.md](results/README.md).
+
+The short labels in commit titles and headings below name the individual
+changes:
+
+| label | change |
+|---|---|
+| M-a | subtree invalidation instead of counting to infinity |
+| M-c | lowest-id parent tie-break everywhere |
+| M-d | preference vector in the combined graph |
+| M-e | seeded change generator |
+| M-f | allocation and list merging in the original propagation loop |
+| MP5 | work-efficient engine: invalidation + pull + near-far push |
+| MP3 | combined graph built per vertex, Step 3 on the same engine |
+| H-M1 | in-memory pipeline: inputs read once, batch applied once, shared buffers |
+| H-M2 | `main` computes all initial trees before the update loop |
 
 Two scopes are reported:
 
@@ -22,7 +41,9 @@ All timings use 28 threads pinned to the physical cores
 (`OMP_NUM_THREADS=28 OMP_PROC_BIND=close OMP_PLACES=cores`) of a Xeon Gold
 6258R; medians of 3 runs unless noted; K = 3; 50K changes with 50%
 deletions. "Original" is `baseline-2026-09` built with the system g++ and
-the original flags (no optimization); "original -O3" adds `-O3`.
+the original flags (no optimization); "original -O3" adds `-O3`. The
+original is timed with `bench/baseline/` (its functions plus stage timers),
+the new code with `bench/run.sh`; see results/README.md, "Reproducing".
 
 ## Summary
 
@@ -124,6 +145,41 @@ increases, `--local HOPS`, `--safe`.
 - `bin/mosp --validate` requires canonical (lowest-id) parents only together
   with `--canonicalize` (fa6abe2).
 
+### Input validation and robustness
+
+- **Weights and indices.** The loaders narrowed every parsed value to `int`
+  unchecked and accepted zero and negative weights. Zero-weight 2-cycles
+  made two equal-distance vertices each other's lowest-id parent (a cyclic
+  tree: INF MOSP costs, and a later deletion hung the update), negative
+  weights wrapped in the engine, and 4294967299 was read as 3. Weights in
+  `Values.txt` and `insert.txt` must now be in [1, 2^31-1], row pointers
+  and column indices are range-checked before narrowing, and the `mospPrep`
+  weight arguments are checked.
+- **Tree files** must list every vertex exactly once (a truncated file left
+  the missing vertices unreachable). A parent cycle in an input tree is
+  reported instead of looping forever, and `--validate` only accepts
+  parents reached through a positive-weight tight edge.
+- **Packed format boundary.** The packed (distance, parent) words were
+  sized for (n - 1) * maxWeight, but a relaxation forms a distance plus one
+  more edge; at the boundary that candidate lost its top bits and a wrong
+  small distance won (path of 65,537 vertices with weights 2^31-1). The
+  packing now requires n * maxWeight to fit (the counterpart of MOSP-CUDA's
+  candidate overflow).
+- **Graphs without edges** read with K = 0; `bin/mosp` and `mospPrep
+  changes/init/expected` now take K from `-k` for them and otherwise stop
+  with a clear message.
+- **Binary cache.** `--cache` trusted any cache newer than the text files,
+  so reusing a cache path for another graph silently loaded the wrong
+  graph, and a damaged cache was used as is. The cache now records the
+  canonical path, size and modification time of its three text files and is
+  rebuilt when they differ; its contents get the same structural checks as
+  the text.
+- **Errors.** An unwritable `--out` aborted with an uncaught filesystem
+  exception; it is now reported. A failed `--timing` write makes `bin/mosp`
+  exit 1. A MOSP tree edge missing from the updated graph is reported as
+  such. `bench/run.sh` no longer treats the first extra option as the
+  repetition count.
+
 ## Performance
 
 ### Build (da40a13)
@@ -163,14 +219,14 @@ near-far SSSP of the MP5 engine. Steps 2-3 (original -O3 map + SOSP -> new):
 roadNet-PA 882 + 95.5 -> 16.2 ms, roadNet-CA 1.27 s + 167 -> 25.8 ms, rgg
 1.28 s + 76.2 -> 19.1 ms, road_usa 11.7 s + 3.21 s -> 367 ms.
 
-### H-M1: in-memory pipeline (64e446a, 245e3b4)
+### H-M1, H-M2: in-memory pipeline (64e446a, 245e3b4)
 
 `mospUpdate()` + `bin/mosp`: the text inputs are read once (the original
 parsed the K-weight CSR K + 1 times), the batch is applied once, the reverse
 graph and the K weight columns are built once in parallel and shared by all
 objectives, buffers are allocated once, no temporary files, and the text
 files are read and written concurrently on the OpenMP threads (so pinning is
-respected). `main` computes the initial trees before the update loop.
+respected). H-M2: `main` computes the initial trees before the update loop.
 
 Where the end-to-end time goes (K = 3, 50K safe batch):
 
@@ -193,6 +249,10 @@ part as in MOSP-CUDA.
   example, the regressions and the large-weight fallback).
 - 30 additional stress seeds with 4 threads and 10 with 16 threads pass; the
   oracle suite passes with 16 threads.
+- The oracle suite also covers a cyclic input tree, a graph without edges,
+  the packed-format boundary, the lowest-id parent recovery of the
+  distance-only fallback under many ties, and the binary cache (another
+  graph's cache, a damaged cache).
 - Real graphs: `bin/mosp --validate --canonicalize` (28 threads) on
   roadNet-PA, roadNet-CA, rgg_n_2_20_s0 and road_usa with the safe,
   disconnecting and local batches: every tree and the MOSP tree identical
@@ -212,7 +272,9 @@ by the batch, combined distances in units of 1/L with a Pref vector,
   `mospUpdate` (bin/mosp).
 - The tracked output trees (`data/`, `output/`, `tests/`,
   `parallelStressTest/`, `html/`) were left in place; `make test` does not
-  touch them.
+  touch them, but `./bin/main` / `make run` rewrite the files in `data/`,
+  `output/` and `tests/`. The generated `compile_commands.json` and the
+  macOS `.DS_Store` are no longer tracked.
 
 ## Known issues and risks
 
