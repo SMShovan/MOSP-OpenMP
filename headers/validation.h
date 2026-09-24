@@ -44,4 +44,18 @@ TreeCheck checkSospTree(const CsrGraph &reverse, int objective, int source,
                         const std::vector<long long> &referenceDistances,
                         const std::vector<int> *referenceParents = nullptr);
 
+/**
+ * @brief Host reference of the combined graph (thesis Ch. 4, Step 2).
+ *
+ * @details
+ * Edge (p,v) is in the graph iff p is the parent of v in some tree T_i;
+ * its weight is L * (K + 1) - sum_i L / Pref_i over those trees (see
+ * combinedEdgeWeight()). One objective per edge.
+ *
+ * @param parents K * n parent arrays, objective-major.
+ */
+CsrGraph combinedGraphReference(const std::vector<int> &parents, int n, int K,
+                                int source,
+                                const std::vector<int> &preferences);
+
 #endif // VALIDATION_H

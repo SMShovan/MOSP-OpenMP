@@ -22,12 +22,10 @@
  *    so the combined-graph distances are in units of 1/L. With the default
  *    Pref = (1,...,1), L = 1 and W(e) = K + 1 - m, where m is the number of
  *    trees containing e (m == K -> 1, ..., m == 1 -> K).
- * 4. Writes the combined-graph edges as a fresh insertion batch.
- * 5. Calls parallelSOSPUpdate with a blank base graph (all distances = INF,
- *    source distance = 0, empty SSSP tree) so the algorithm runs like
- *    Bellman-Ford seeded from the source on the combined graph.
+ * 4. Finds the SOSP tree of the combined graph from the source.
  *
- * All intermediate files are written under @p workDir.
+ * Steps 1-4 run with OpenMP (see combinedGraphCpu.h); no intermediate
+ * files are written.
  *
  * @param originalCsrPrefix   Prefix of the original CSR files (used only to
  *                             determine the number of vertices; no edge data
@@ -37,8 +35,8 @@
  * @param K                    Number of objectives / trees (must equal
  *                             treeInputPaths.size()).
  * @param source               Source vertex (0-indexed, default 0).
- * @param workDir              Directory for intermediate temp files
- *                             (default "output/combinedGraph").
+ * @param workDir              Unused (kept for compatibility; the combined
+ *                             graph no longer goes through temp files).
  * @param distancesOutputPath  Output path for SSSP distances on combined graph.
  * @param treeOutputPath       Output path for SSSP parent array on combined
  * graph.

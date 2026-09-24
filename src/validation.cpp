@@ -7,7 +7,9 @@
 #include "validation.h"
 
 #include "csrGraph.h"
+#include "parallelCombinedGraph.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -81,4 +83,43 @@ TreeCheck checkSospTree(const CsrGraph &reverse, int objective, int source,
     }
   }
   return check;
+}
+
+CsrGraph combinedGraphReference(const vector<int> &parents, int n, int K,
+                                int source, const vector<int> &preferences) {
+  const long long scale = preferenceScale(preferences, K);
+  CsrGraph combined;
+  combined.numberOfNodes = n;
+  combined.numberOfObjectives = 1;
+  vector<vector<pair<int, int>>> rows(n);
+  for (int v = 0; v < n; ++v) {
+    if (v == source) {
+      continue;
+    }
+    for (int k = 0; k < K; ++k) {
+      const int p = parents[static_cast<size_t>(k) * n + v];
+      bool seen = p < 0;
+      for (int j = 0; j < k && !seen; ++j) {
+        seen = parents[static_cast<size_t>(j) * n + v] == p;
+      }
+      if (seen) {
+        continue;
+      }
+      unsigned int mask = 0;
+      for (int j = 0; j < K; ++j) {
+        mask |= parents[static_cast<size_t>(j) * n + v] == p ? 1u << j : 0u;
+      }
+      rows[p].push_back(
+          {v, static_cast<int>(combinedEdgeWeight(mask, preferences, K, scale))});
+    }
+  }
+  combined.rowPtr.assign(n + 1, 0);
+  for (int u = 0; u < n; ++u) {
+    combined.rowPtr[u + 1] = combined.rowPtr[u] + static_cast<int>(rows[u].size());
+    for (const auto &edge : rows[u]) {
+      combined.colInd.push_back(edge.first);
+      combined.weights.push_back(edge.second);
+    }
+  }
+  return combined;
 }

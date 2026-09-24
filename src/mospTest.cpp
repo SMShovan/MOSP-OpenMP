@@ -181,49 +181,6 @@ bool runAndCheck(const string &label, const UpdateFunction &update,
   return allOk;
 }
 
-/// Host reference for the combined graph: edge (p,v) is in the combined
-/// graph iff p is the parent of v in some tree T_i; its weight is
-/// L * (K + 1) - sum_i L / Pref_i over those trees (K + 1 - membership
-/// for Pref = 1s).
-CsrGraph combinedReference(const vector<vector<int>> &parents, int source,
-                           const vector<int> &pref) {
-  const int K = static_cast<int>(parents.size());
-  const int n = static_cast<int>(parents[0].size());
-  CsrGraph combined;
-  combined.numberOfNodes = n;
-  combined.numberOfObjectives = 1;
-  const long long scale = preferenceScale(pref, K);
-  vector<vector<pair<int, int>>> rows(n);
-  for (int v = 0; v < n; ++v) {
-    if (v == source) {
-      continue;
-    }
-    vector<int> seen;
-    for (int k = 0; k < K; ++k) {
-      int p = parents[k][v];
-      if (p < 0 || find(seen.begin(), seen.end(), p) != seen.end()) {
-        continue;
-      }
-      seen.push_back(p);
-      unsigned int mask = 0;
-      for (int j = 0; j < K; ++j) {
-        mask |= parents[j][v] == p ? 1u << j : 0u;
-      }
-      rows[p].push_back(
-          {v, static_cast<int>(combinedEdgeWeight(mask, pref, K, scale))});
-    }
-  }
-  combined.rowPtr.assign(n + 1, 0);
-  for (int u = 0; u < n; ++u) {
-    combined.rowPtr[u + 1] = combined.rowPtr[u] + static_cast<int>(rows[u].size());
-    for (auto &edge : rows[u]) {
-      combined.colInd.push_back(edge.first);
-      combined.weights.push_back(edge.second);
-    }
-  }
-  return combined;
-}
-
 void checkCombined(const CaseFiles &files, const vector<string> &trees,
                    int n, int source, const vector<int> &pref) {
   const int K = static_cast<int>(trees.size());
@@ -238,7 +195,11 @@ void checkCombined(const CaseFiles &files, const vector<string> &trees,
   for (int k = 0; k < K; ++k) {
     readParents(trees[k], n, parents[k]);
   }
-  CsrGraph combined = combinedReference(parents, source, pref), reverse;
+  vector<int> flat;
+  for (const auto &tree : parents) {
+    flat.insert(flat.end(), tree.begin(), tree.end());
+  }
+  CsrGraph combined = combinedGraphReference(flat, n, K, source, pref), reverse;
   transposeCsrGraph(combined, reverse);
   vector<long long> dist, refDist;
   vector<int> parent, refParent;
