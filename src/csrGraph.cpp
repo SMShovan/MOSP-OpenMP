@@ -19,6 +19,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <future>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -188,10 +190,94 @@ constexpr char kBinaryMagic[8] = {'M', 'O', 'S', 'P', 'C', 'S', 'R', '1'};
 // Graph I/O
 // ============================================================================
 
+namespace {
+
+/// Parse a Values file: one line per edge with K weights (K inferred).
+bool readValuesFile(const string &path, vector<int> &weights, int &objectives,
+                    long long &lines, string &error) {
+  string text;
+  if (!readWholeFile(path, text)) {
+    error = "Could not read CSR values file.";
+    return false;
+  }
+  TextScanner scanner(text);
+  weights.clear();
+  weights.reserve(text.size() / 3);
+  objectives = 0;
+  lines = 0;
+  while (true) {
+    scanner.skipBlanks();
+    int onLine = 0;
+    long long value = 0;
+    while (!scanner.atEnd() && !scanner.atNewline()) {
+      if (!scanner.readInt(value)) {
+        error = "Invalid token in CSR values file.";
+        return false;
+      }
+      weights.push_back(static_cast<int>(value));
+      ++onLine;
+      scanner.skipBlanks();
+    }
+    if (onLine > 0) {
+      if (objectives == 0) {
+        objectives = onLine;
+      } else if (onLine != objectives) {
+        error = "Inconsistent number of objectives.";
+        return false;
+      }
+      ++lines;
+    }
+    if (scanner.atEnd()) {
+      break;
+    }
+    scanner.advance(); // newline
+  }
+  return true;
+}
+
+} // namespace
+
+bool runConcurrently(const vector<function<bool()>> &jobs) {
+  const int count = static_cast<int>(jobs.size());
+  vector<char> ok(count, 0);
+#ifdef _OPENMP
+#pragma omp parallel for schedule(dynamic, 1) num_threads(count)
+  for (int i = 0; i < count; ++i) {
+    ok[i] = jobs[i]() ? 1 : 0;
+  }
+#else
+  vector<future<bool>> running;
+  for (const auto &job : jobs) {
+    running.push_back(async(launch::async, job));
+  }
+  for (int i = 0; i < count; ++i) {
+    ok[i] = running[i].get() ? 1 : 0;
+  }
+#endif
+  bool all = true;
+  for (char flag : ok) {
+    all = all && flag;
+  }
+  return all;
+}
+
 bool readCsrGraph(const string &prefix, CsrGraph &graph) {
   graph = CsrGraph();
-  if (!readIntFile(prefix + "RowPtr.txt", graph.rowPtr) ||
-      graph.rowPtr.size() < 2) {
+  // The three files are independent: parse them concurrently.
+  bool rowsOk = false, colsOk = false, valuesOk = false;
+  int objectives = 0;
+  long long lines = 0;
+  string valuesError;
+  runConcurrently({
+      [&] { return rowsOk = readIntFile(prefix + "RowPtr.txt", graph.rowPtr); },
+      [&] { return colsOk = readIntFile(prefix + "ColInd.txt", graph.colInd); },
+      [&] {
+        return valuesOk = readValuesFile(prefix + "Values.txt", graph.weights,
+                                         objectives, lines, valuesError);
+      },
+  });
+
+  if (!rowsOk || graph.rowPtr.size() < 2) {
     cout << "Error: Could not read CSR row pointers: " << prefix
          << "RowPtr.txt\n";
     return false;
@@ -208,9 +294,7 @@ bool readCsrGraph(const string &prefix, CsrGraph &graph) {
       return false;
     }
   }
-
-  if (!readIntFile(prefix + "ColInd.txt", graph.colInd) ||
-      static_cast<int>(graph.colInd.size()) != numberOfEdges) {
+  if (!colsOk || static_cast<int>(graph.colInd.size()) != numberOfEdges) {
     cout << "Error: CSR column index file missing or size mismatch.\n";
     return false;
   }
@@ -220,44 +304,9 @@ bool readCsrGraph(const string &prefix, CsrGraph &graph) {
       return false;
     }
   }
-
-  // Values: one line per edge with K weights.
-  string text;
-  if (!readWholeFile(prefix + "Values.txt", text)) {
-    cout << "Error: Could not read CSR values file.\n";
+  if (!valuesOk) {
+    cout << "Error: " << valuesError << "\n";
     return false;
-  }
-  TextScanner scanner(text);
-  graph.weights.clear();
-  graph.weights.reserve(static_cast<size_t>(numberOfEdges) * 3);
-  int objectives = 0;
-  long long lines = 0;
-  while (true) {
-    scanner.skipBlanks();
-    int onLine = 0;
-    long long value = 0;
-    while (!scanner.atEnd() && !scanner.atNewline()) {
-      if (!scanner.readInt(value)) {
-        cout << "Error: Invalid token in CSR values file.\n";
-        return false;
-      }
-      graph.weights.push_back(static_cast<int>(value));
-      ++onLine;
-      scanner.skipBlanks();
-    }
-    if (onLine > 0) {
-      if (objectives == 0) {
-        objectives = onLine;
-      } else if (onLine != objectives) {
-        cout << "Error: Inconsistent number of objectives.\n";
-        return false;
-      }
-      ++lines;
-    }
-    if (scanner.atEnd()) {
-      break;
-    }
-    scanner.advance(); // newline
   }
   if (lines != numberOfEdges) {
     cout << "Error: values size mismatch.\n";

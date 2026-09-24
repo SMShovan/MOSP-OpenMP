@@ -1,6 +1,7 @@
 #ifndef CSR_GRAPH_H
 #define CSR_GRAPH_H
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,19 @@ bool writeDistances(const std::string &path,
 
 /** @brief Write a parent array. */
 bool writeParents(const std::string &path, const std::vector<int> &parent);
+
+/**
+ * @brief Run independent jobs (e.g. file reads/writes) concurrently.
+ *
+ * @details
+ * With OpenMP the jobs run on the OpenMP worker threads, which respects
+ * thread pinning (threads started with std::async would inherit the
+ * single-core affinity of a pinned master thread); without OpenMP each
+ * job runs in its own std::async thread.
+ *
+ * @return true if every job returned true.
+ */
+bool runConcurrently(const std::vector<std::function<bool()>> &jobs);
 
 /** @brief Distance sentinel used throughout (as in the original code). */
 constexpr long long DISTANCE_INF = 0x7fffffffffffffffLL / 4;

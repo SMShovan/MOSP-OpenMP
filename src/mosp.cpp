@@ -52,10 +52,13 @@
 
 #include <omp.h>
 
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -158,19 +161,29 @@ bool writeCosts(const string &path, const vector<long long> &costs, int K) {
     return false;
   }
   const size_t n = costs.size() / K;
+  string buffer;
+  buffer.reserve(1 << 22);
+  char digits[24];
+  bool ok = true;
   for (size_t v = 0; v < n; ++v) {
-    fprintf(file, "%zu", v);
+    buffer.append(digits, to_chars(digits, digits + 24, v).ptr);
     for (int k = 0; k < K; ++k) {
       long long c = costs[v * K + k];
+      buffer.push_back(' ');
       if (c >= DISTANCE_INF / 2) {
-        fprintf(file, " INF");
+        buffer.append("INF");
       } else {
-        fprintf(file, " %lld", c);
+        buffer.append(digits, to_chars(digits, digits + 24, c).ptr);
       }
     }
-    fputc('\n', file);
+    buffer.push_back('\n');
+    if (buffer.size() > (1 << 22)) {
+      ok = ok && fwrite(buffer.data(), 1, buffer.size(), file) == buffer.size();
+      buffer.clear();
+    }
   }
-  return fclose(file) == 0;
+  ok = ok && fwrite(buffer.data(), 1, buffer.size(), file) == buffer.size();
+  return fclose(file) == 0 && ok;
 }
 
 /// Check every tree and the MOSP tree against host Dijkstra.
@@ -241,22 +254,30 @@ int main(int argc, char **argv) {
   vector<long long> distances(static_cast<size_t>(K) * n);
   vector<int> parents(static_cast<size_t>(K) * n);
   {
+    // The batch and the 2K tree files are independent: read concurrently.
     ScopedStage stage("read_changes_and_trees");
-    if (!readChangeBatch(opt.changes + "/insert.txt",
-                         opt.changes + "/delete.txt", KG, n, batch)) {
+    vector<vector<long long>> dist(K);
+    vector<vector<int>> parent(K);
+    vector<function<bool()>> reads{[&] {
+      return readChangeBatch(opt.changes + "/insert.txt",
+                             opt.changes + "/delete.txt", KG, n, batch);
+    }};
+    for (int k = 0; k < K; ++k) {
+      string dir = opt.init + "/obj" + to_string(k);
+      reads.push_back([&, k, dir] {
+        return readDistances(dir + "/distancesOriginal.txt", n, dist[k]);
+      });
+      reads.push_back([&, k, dir] {
+        return readParents(dir + "/SSSPTreeOriginal.txt", n, parent[k]);
+      });
+    }
+    if (!runConcurrently(reads)) {
       return 1;
     }
     for (int k = 0; k < K; ++k) {
-      vector<long long> dist;
-      vector<int> parent;
-      string dir = opt.init + "/obj" + to_string(k);
-      if (!readDistances(dir + "/distancesOriginal.txt", n, dist) ||
-          !readParents(dir + "/SSSPTreeOriginal.txt", n, parent)) {
-        return 1;
-      }
-      copy(dist.begin(), dist.end(),
+      copy(dist[k].begin(), dist[k].end(),
            distances.begin() + static_cast<size_t>(k) * n);
-      copy(parent.begin(), parent.end(),
+      copy(parent[k].begin(), parent[k].end(),
            parents.begin() + static_cast<size_t>(k) * n);
     }
   }
@@ -285,24 +306,41 @@ int main(int argc, char **argv) {
 
   // --- Outputs ----------------------------------------------------------------
   if (opt.writeOutput) {
+    // Every output file is independent: write them concurrently.
     auto tw = chrono::steady_clock::now();
     ScopedStage stage("write_outputs");
-    bool ok = true;
-    for (int k = 0; k < K && ok; ++k) {
-      string dir = opt.out + "/obj" + to_string(k);
-      ok = writeDistances(dir + "/distancesUpdated.txt",
-                          slice(result.distances, k, n)) &&
-           writeParents(dir + "/SSSPTreeUpdated.txt",
-                        slice(result.parents, k, n));
+    for (int k = 0; k < K; ++k) {
+      filesystem::create_directories(opt.out + "/obj" + to_string(k));
     }
-    vector<long long> costs;
-    ok = ok &&
-         writeDistances(opt.out + "/combinedGraph/distancesCsr.txt",
-                        result.combinedDistances) &&
-         writeParents(opt.out + "/combinedGraph/SSSPTreeCsr.txt",
-                      result.combinedParent) &&
-         mospPathCosts(updated, result.combinedParent, opt.source, costs) &&
-         writeCosts(opt.out + "/combinedGraph/mospCosts.txt", costs, KG);
+    filesystem::create_directories(opt.out + "/combinedGraph");
+    vector<function<bool()>> writes;
+    for (int k = 0; k < K; ++k) {
+      string dir = opt.out + "/obj" + to_string(k);
+      writes.push_back([&, k, dir] {
+        return writeDistances(dir + "/distancesUpdated.txt",
+                              slice(result.distances, k, n));
+      });
+      writes.push_back([&, k, dir] {
+        return writeParents(dir + "/SSSPTreeUpdated.txt",
+                            slice(result.parents, k, n));
+      });
+    }
+    const string combinedDir = opt.out + "/combinedGraph";
+    writes.push_back([&] {
+      return writeDistances(combinedDir + "/distancesCsr.txt",
+                            result.combinedDistances);
+    });
+    writes.push_back([&] {
+      return writeParents(combinedDir + "/SSSPTreeCsr.txt",
+                          result.combinedParent);
+    });
+    writes.push_back([&] {
+      vector<long long> costs;
+      return mospPathCosts(updated, result.combinedParent, opt.source,
+                           costs) &&
+             writeCosts(combinedDir + "/mospCosts.txt", costs, KG);
+    });
+    const bool ok = runConcurrently(writes);
     if (!ok) {
       cerr << "cannot write the outputs to " << opt.out << "\n";
       return 1;
