@@ -1,0 +1,10 @@
+# Build products
+/bin/
+/build/
+
+# Scratch output of `make test`
+/test-output/
+
+# Profiler reports
+*.nsys-rep
+*.sqlite
