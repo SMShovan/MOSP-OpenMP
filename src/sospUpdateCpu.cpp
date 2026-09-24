@@ -397,6 +397,9 @@ bool sospUpdateCpu(const HostCsr &out, const HostCsr &in,
       return __atomic_load_n(&state[v], __ATOMIC_RELAXED);
     };
     ListGather invalidGather(ws.candidates);
+    // A walk longer than n steps means the input tree has a parent cycle
+    // (e.g. a corrupt --init file): report it instead of looping forever.
+    int cyclic = 0;
 #pragma omp parallel
     {
       // 0 unknown, 1 valid, 2 invalid (a root among the vertex and its
@@ -404,12 +407,18 @@ bool sospUpdateCpu(const HostCsr &out, const HostCsr &in,
       // state, so relaxed atomics suffice.
 #pragma omp for schedule(dynamic, 1024)
       for (int v = 0; v < n; ++v) {
-        if (loadState(v) != 0) {
+        if (loadState(v) != 0 || __atomic_load_n(&cyclic, __ATOMIC_RELAXED)) {
           continue;
         }
         int u = v;
-        while (loadState(u) == 0 && parent[u] >= 0) {
+        int steps = 0;
+        while (loadState(u) == 0 && parent[u] >= 0 && steps <= n) {
           u = parent[u];
+          ++steps;
+        }
+        if (steps > n) {
+          __atomic_store_n(&cyclic, 1, __ATOMIC_RELAXED);
+          continue;
         }
         char result = loadState(u) == 0 ? 1 : loadState(u);
         for (u = v; u >= 0 && loadState(u) == 0; u = parent[u]) {
@@ -426,6 +435,10 @@ bool sospUpdateCpu(const HostCsr &out, const HostCsr &in,
         }
       }
       invalidGather.gather(localInvalid);
+    }
+    if (cyclic) {
+      cerr << "Error: the input SOSP tree has a parent cycle.\n";
+      return false;
     }
   }
   s.invalidated = static_cast<int>(ws.candidates.size());

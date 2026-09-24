@@ -80,6 +80,8 @@ long long defaultDelta(long long numberOfEdges, int numberOfNodes,
  *
  * @param maxWeight Largest edge weight before or after the batch.
  * @param delta     Near-far bucket width (> 0).
+ * @return false (with a message) on invalid input, e.g. an input distance
+ *         above (n - 1) * maxWeight or a parent cycle in the input tree.
  */
 bool sospUpdateCpu(const HostCsr &out, const HostCsr &in,
                    const HostChanges &changes, int source, long long delta,

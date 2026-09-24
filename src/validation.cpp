@@ -66,7 +66,10 @@ TreeCheck checkSospTree(const CsrGraph &reverse, int objective, int source,
       if (!finite(distances[u])) {
         continue;
       }
-      if (distances[u] + reverse.weight(e, objective) != dv) {
+      // A tight edge must have a positive weight: parents then have
+      // strictly smaller distances, so consistent parents form no cycle.
+      const int w = reverse.weight(e, objective);
+      if (w <= 0 || distances[u] + w != dv) {
         continue;
       }
       if (u == p) {

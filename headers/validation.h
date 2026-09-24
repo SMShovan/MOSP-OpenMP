@@ -30,7 +30,8 @@ struct TreeCheck {
  *   updated graph); unreachable vertices must be DISTANCE_INF;
  * - parent consistency: the source and unreachable vertices have parent -1;
  *   every other vertex v has a parent p such that the graph contains the
- *   edge (p,v) with dist[p] + w(p,v) == dist[v];
+ *   edge (p,v) with w(p,v) > 0 and dist[p] + w(p,v) == dist[v] (so the
+ *   parents of consistent vertices cannot form a cycle);
  * - canonical parents: p is the lowest vertex id among all in-neighbours u
  *   with dist[u] + w(u,v) == dist[v] (the tie-break rule of this code);
  * - if @p referenceParents is non-null, parents must match it exactly.

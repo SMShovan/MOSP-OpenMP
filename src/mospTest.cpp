@@ -587,7 +587,26 @@ void runRegressions(unsigned int) {
     runAndCheck("regression/sequential", sequential, files, updated, reverse,
                 0);
   }
-  cout << "regressions: " << cases.size() << " cases\n";
+  // A parent cycle in the input tree (1 <-> 2 below the deleted edge
+  // 0 -> 3) must be reported, not make the invalidation walk loop forever.
+  CsrGraph graph;
+  graph.numberOfNodes = 4;
+  graph.numberOfObjectives = 1;
+  graph.rowPtr = {0, 1, 2, 3, 5};
+  graph.colInd = {3, 2, 1, 1, 2};
+  graph.weights = {5, 1, 1, 1, 1};
+  ChangeBatch batch;
+  batch.numberOfObjectives = 1;
+  batch.deleteFrom = {0};
+  batch.deleteTo = {3};
+  CsrGraph updated;
+  MospResult result;
+  const bool accepted = mospUpdate(graph, batch, {0, 6, 6, 5}, {-1, 2, 1, 0},
+                                   MospOptions(), updated, result);
+  report("regression/cyclic-tree", !accepted,
+         "a cyclic input tree was accepted");
+  checkPipeline(g_work + "/regression_acyclic", graph, batch, 0, {});
+  cout << "regressions: " << cases.size() + 1 << " cases\n";
 }
 
 /// Large weights: (n - 1) * maxWeight does not fit next to the parent ids
