@@ -16,7 +16,8 @@ APP      := $(BINDIR)/main
 # Base sources (shared by all targets)
 BASE_SRCS := $(SRCDIR)/generateGraph.cpp $(SRCDIR)/generateGraphCSR.cpp $(SRCDIR)/generateChangedEdges.cpp $(SRCDIR)/updateGraphCSR.cpp $(SRCDIR)/generateTestCases.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp \
              $(SRCDIR)/csrGraph.cpp $(SRCDIR)/stageTimer.cpp $(SRCDIR)/validation.cpp \
-             $(SRCDIR)/changeGenerator.cpp $(SRCDIR)/sospUpdateCpu.cpp $(SRCDIR)/combinedGraphCpu.cpp
+             $(SRCDIR)/changeGenerator.cpp $(SRCDIR)/sospUpdateCpu.cpp $(SRCDIR)/combinedGraphCpu.cpp \
+             $(SRCDIR)/mospUpdate.cpp
 
 # Main application (includes sequential SOSP update)
 MAIN_SRCS := $(SRCDIR)/main.cpp $(BASE_SRCS) $(SRCDIR)/sequentialSOSPUpdate.cpp $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/parallelCombinedGraph.cpp

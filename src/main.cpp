@@ -94,6 +94,17 @@ int main() {
 
   vector<string> objTreePaths(numberOfObjectives);
 
+  // Initial SOSP trees of every objective first: they are inputs of the
+  // update, so they are not computed inside the update loop.
+  for (int obj = 0; obj < numberOfObjectives; ++obj) {
+    const string objDir = "output/parallelSospObj" + to_string(obj);
+    if (!runDijkstraCSR(originalGraphPrefix, obj, source,
+                        objDir + "/distancesOriginal.txt",
+                        objDir + "/SSSPTreeOriginal.txt")) {
+      return 1;
+    }
+  }
+
   for (int obj = 0; obj < numberOfObjectives; ++obj) {
     const string objDir = "output/parallelSospObj" + to_string(obj);
 
@@ -101,11 +112,6 @@ int main() {
     const string objTreeOriginal = objDir + "/SSSPTreeOriginal.txt";
     const string objDistOut = objDir + "/distancesUpdated.txt";
     const string objTreeOut = objDir + "/SSSPTreeUpdated.txt";
-
-    if (!runDijkstraCSR(originalGraphPrefix, obj, source, objDistOriginal,
-                        objTreeOriginal)) {
-      return 1;
-    }
 
     if (!parallelSOSPUpdate(originalGraphPrefix, objDistOriginal,
                             objTreeOriginal, "output/changedEdges/insert.txt",
