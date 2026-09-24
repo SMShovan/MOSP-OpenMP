@@ -89,9 +89,14 @@ $(BINDIR)/parallelStressTest: $(PARALLEL_STRESS_OBJS) | $(BINDIR)
 #   make test                 stock pipeline + 10 test cases + both stress
 #                             tests + the oracle suite (bin/mospTest)
 #   make test TEST_SEED=0     stress tests with a random seed (printed)
-TESTDIR   := test-output
-TEST_SEED ?= 1
+#   make test TEST_THREADS=8  OpenMP threads for the tests (default 4; the
+#                             test graphs are tiny, and more threads than
+#                             free cores make OpenMP barriers crawl)
+TESTDIR      := test-output
+TEST_SEED    ?= 1
+TEST_THREADS ?= 4
 
+test: export OMP_NUM_THREADS = $(TEST_THREADS)
 test: $(APP) stressTest parallelStressTest $(BINDIR)/mospTest
 	@rm -rf $(TESTDIR) && mkdir -p $(TESTDIR)
 	@echo "== bin/main (pipeline + 10 generated test cases)"
