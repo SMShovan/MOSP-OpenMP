@@ -19,18 +19,21 @@
  *
  *   changes <csrPrefix> <outDir> [--changes N] [--ins PCT]
  *           [--mode uniform|targeted|reweight|increase] [--local HOPS]
- *           [--safe] [--seed S] [--source s] [--wmin a] [--wmax b]
+ *           [--safe] [--seed S] [--source s] [--wmin a] [--wmax b] [-k K]
  *       Generate <outDir>/insert.txt and <outDir>/delete.txt
  *       (see changeGenerator.h for the modes).
  *
- *   init <csrPrefix> <outDir> [--source s]
+ *   init <csrPrefix> <outDir> [--source s] [-k K]
  *       Initial SOSP trees: Dijkstra per objective ->
  *       <outDir>/obj<k>/distancesOriginal.txt, SSSPTreeOriginal.txt.
  *
- *   expected <csrPrefix> <changesDir> <outDir> [--source s]
+ *   expected <csrPrefix> <changesDir> <outDir> [--source s] [-k K]
  *       Ground truth: apply the batch and run Dijkstra per objective on the
  *       updated graph -> <outDir>/obj<k>/distancesUpdated.txt,
  *       SSSPTreeUpdated.txt.
+ *
+ * -k K gives the number of objectives of a graph without edges, whose
+ * empty Values file does not tell it (graphs with edges ignore it).
  */
 
 #include "changeGenerator.h"
@@ -94,10 +97,13 @@ int usage() {
           "                [--mode uniform|targeted|reweight|increase] "
           "[--local HOPS]\n"
           "                [--safe] [--seed S] [--source s] [--wmin a] "
-          "[--wmax b]\n"
-          "       mospPrep init <csrPrefix> <outDir> [--source s]\n"
+          "[--wmax b] [-k K]\n"
+          "       mospPrep init <csrPrefix> <outDir> [--source s] [-k K]\n"
           "       mospPrep expected <csrPrefix> <changesDir> <outDir> "
-          "[--source s]\n";
+          "[--source s] [-k K]\n"
+          "  -k K: number of objectives of a graph without edges (it "
+          "cannot be\n"
+          "        inferred from an empty values file)\n";
   return 2;
 }
 
@@ -198,7 +204,7 @@ int widen(const string &in, const string &out, int K, int wmin, int wmax,
 
 /// Parse "--name value" style options into generator options.
 bool parseChangeOptions(int argc, char **argv, int first,
-                        ChangeGeneratorOptions &opt) {
+                        ChangeGeneratorOptions &opt, int &K) {
   for (int i = first; i < argc; ++i) {
     string a = argv[i];
     if (a == "--safe") {
@@ -209,7 +215,11 @@ bool parseChangeOptions(int argc, char **argv, int first,
       return false;
     }
     string v = argv[++i];
-    if (a == "--changes") {
+    if (a == "-k") {
+      if (!parseIntArg(v.c_str(), "-k", 1, 32, K)) {
+        return false;
+      }
+    } else if (a == "--changes") {
       opt.numberOfChanges = atoi(v.c_str());
     } else if (a == "--ins") {
       opt.insertionPercentage = atof(v.c_str());
@@ -238,13 +248,25 @@ bool parseChangeOptions(int argc, char **argv, int first,
   return true;
 }
 
-int sourceOption(int argc, char **argv, int first) {
-  for (int i = first; i + 1 < argc; ++i) {
+/// Options of init / expected: [--source s] [-k K].
+bool treeOptions(int argc, char **argv, int first, int &source, int &K) {
+  source = 0;
+  K = 0;
+  for (int i = first; i < argc; ++i) {
+    if (i + 1 >= argc) {
+      return false;
+    }
     if (strcmp(argv[i], "--source") == 0) {
-      return atoi(argv[i + 1]);
+      source = atoi(argv[++i]);
+    } else if (strcmp(argv[i], "-k") == 0) {
+      if (!parseIntArg(argv[++i], "-k", 1, 32, K)) {
+        return false;
+      }
+    } else {
+      return false;
     }
   }
-  return 0;
+  return true;
 }
 
 int dijkstraAll(const CsrGraph &graph, int source, const string &outDir,
@@ -294,7 +316,8 @@ int main(int argc, char **argv) {
              : 1;
   } else if (command == "changes" && argc >= 4) {
     ChangeGeneratorOptions opt;
-    if (!parseChangeOptions(argc, argv, 4, opt)) {
+    int objectives = 0;
+    if (!parseChangeOptions(argc, argv, 4, opt, objectives)) {
       return usage();
     }
     CsrGraph graph;
@@ -302,6 +325,7 @@ int main(int argc, char **argv) {
     string report;
     const string dir = argv[3];
     rc = readCsrGraph(argv[2], graph) &&
+                 resolveObjectives(graph, objectives) &&
                  generateChangeBatch(graph, opt, batch, &report) &&
                  writeChangeBatch(batch, dir + "/insert.txt",
                                   dir + "/delete.txt")
@@ -309,23 +333,32 @@ int main(int argc, char **argv) {
              : 1;
     cout << "changes: " << report << "\n";
   } else if (command == "init" && argc >= 4) {
+    int source = 0, objectives = 0;
+    if (!treeOptions(argc, argv, 4, source, objectives)) {
+      return usage();
+    }
     CsrGraph graph;
-    rc = readCsrGraph(argv[2], graph)
-             ? dijkstraAll(graph, sourceOption(argc, argv, 4), argv[3],
-                           "distancesOriginal.txt", "SSSPTreeOriginal.txt")
+    rc = readCsrGraph(argv[2], graph) && resolveObjectives(graph, objectives)
+             ? dijkstraAll(graph, source, argv[3], "distancesOriginal.txt",
+                           "SSSPTreeOriginal.txt")
              : 1;
   } else if (command == "expected" && argc >= 5) {
+    int source = 0, objectives = 0;
+    if (!treeOptions(argc, argv, 5, source, objectives)) {
+      return usage();
+    }
     CsrGraph original, updated;
     ChangeBatch batch;
     const string changes = argv[3];
     rc = readCsrGraph(argv[2], original) &&
+                 resolveObjectives(original, objectives) &&
                  readChangeBatch(changes + "/insert.txt",
                                  changes + "/delete.txt",
                                  original.numberOfObjectives,
                                  original.numberOfNodes, batch) &&
                  applyChangeBatch(original, batch, updated)
-             ? dijkstraAll(updated, sourceOption(argc, argv, 5), argv[4],
-                           "distancesUpdated.txt", "SSSPTreeUpdated.txt")
+             ? dijkstraAll(updated, source, argv[4], "distancesUpdated.txt",
+                           "SSSPTreeUpdated.txt")
              : 1;
   } else {
     return usage();

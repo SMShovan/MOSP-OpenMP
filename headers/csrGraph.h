@@ -60,6 +60,19 @@ struct ChangeBatch {
  */
 bool readCsrGraph(const std::string &prefix, CsrGraph &graph);
 
+/**
+ * @brief Settle the number of objectives of a graph read from text.
+ *
+ * @details
+ * readCsrGraph() infers K from the first line of Values.txt, so a graph
+ * without edges (for example one whose previous batch deleted every edge)
+ * reads with K = 0. Then @p requested (a -k option; 1..32) sets K; if it
+ * is not given, an error asks for it. Graphs with edges are left as read.
+ *
+ * @return false (with an error message) if K is still unknown.
+ */
+bool resolveObjectives(CsrGraph &graph, int requested);
+
 /** @brief Write a graph in the same three-file text format. */
 bool writeCsrGraph(const std::string &prefix, const CsrGraph &graph);
 

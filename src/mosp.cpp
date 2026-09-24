@@ -10,7 +10,8 @@
  *   --changes <dir>    directory with insert.txt and delete.txt
  *   --init <dir>       initial SOSP trees: <dir>/obj<k>/distancesOriginal.txt
  *                      and <dir>/obj<k>/SSSPTreeOriginal.txt
- *   -k <K>             number of objectives to use (default: all in the graph)
+ *   -k <K>             number of objectives to use (default: all in the graph;
+ *                      required for a graph without edges)
  *   --source <s>       source vertex (default 0)
  *   --pref p1,..,pK    preference vector of the combined graph (default 1s;
  *                      lower value = higher priority, thesis Ch. 4 Step 2)
@@ -244,7 +245,8 @@ int main(int argc, char **argv) {
   ChangeBatch batch;
   {
     ScopedStage stage("read_graph");
-    if (!loadCsrGraph(opt.graph, original, opt.cache)) {
+    if (!loadCsrGraph(opt.graph, original, opt.cache) ||
+        !resolveObjectives(original, opt.K)) {
       return 1;
     }
   }

@@ -606,7 +606,27 @@ void runRegressions(unsigned int) {
   report("regression/cyclic-tree", !accepted,
          "a cyclic input tree was accepted");
   checkPipeline(g_work + "/regression_acyclic", graph, batch, 0, {});
-  cout << "regressions: " << cases.size() + 1 << " cases\n";
+
+  // A graph without edges (e.g. after a batch deleted every edge): its
+  // empty Values file does not give K, which the caller then supplies.
+  CsrGraph edgeless;
+  edgeless.numberOfNodes = 3;
+  edgeless.numberOfObjectives = 2;
+  edgeless.rowPtr = {0, 0, 0, 0};
+  const string prefix = g_work + "/regression_edgeless/graphCsr";
+  writeCsrGraph(prefix, edgeless);
+  CsrGraph reread;
+  const bool resolved =
+      readCsrGraph(prefix, reread) && resolveObjectives(reread, 2);
+  report("regression/edgeless", resolved && reread.numberOfObjectives == 2,
+         "K of a graph without edges not taken from the caller");
+  ChangeBatch inserts;
+  inserts.numberOfObjectives = 2;
+  inserts.insertFrom = {0, 1};
+  inserts.insertTo = {1, 2};
+  inserts.insertWeights = {5, 1, 3, 1};
+  checkPipeline(g_work + "/regression_edgeless", reread, inserts, 0, {});
+  cout << "regressions: " << cases.size() + 3 << " cases\n";
 }
 
 /// Distance-only fallback with many equal-distance parents: every weight

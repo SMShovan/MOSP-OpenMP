@@ -92,7 +92,8 @@ with pinned threads and reports medians.
 
 ```
 mosp --graph <csrPrefix> --changes <dir> --init <dir> [options]
-  -k K               use the first K objectives (default: all)
+  -k K               use the first K objectives (default: all; required
+                     for a graph without edges, whose K cannot be inferred)
   --source s         source vertex (default 0)
   --pref p1,..,pK    preference vector (default all 1s; lower = higher priority)
   --delta D          near-far bucket width (default 32 * avg weight / avg degree)
@@ -120,10 +121,14 @@ mospPrep widen <inPrefix> <outPrefix> <K> <wmin> <wmax> <seed>
 mospPrep cache <csrPrefix> <binaryPath>
 mospPrep changes <csrPrefix> <outDir> [--changes N] [--ins PCT]
                  [--mode uniform|targeted|reweight|increase] [--local HOPS]
-                 [--safe] [--seed S] [--source s] [--wmin a] [--wmax b]
-mospPrep init <csrPrefix> <outDir> [--source s]
-mospPrep expected <csrPrefix> <changesDir> <outDir> [--source s]
+                 [--safe] [--seed S] [--source s] [--wmin a] [--wmax b] [-k K]
+mospPrep init <csrPrefix> <outDir> [--source s] [-k K]
+mospPrep expected <csrPrefix> <changesDir> <outDir> [--source s] [-k K]
 ```
+
+`-k K` gives the number of objectives of a graph without edges (its
+empty Values file does not tell it); weights must satisfy
+1 <= wmin <= wmax <= 2^31-1.
 
 Change modes: `uniform` (the original generator, identical output for the
 same seed), `targeted` (thesis workload: below-average inserted weights,

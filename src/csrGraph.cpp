@@ -350,6 +350,19 @@ bool readCsrGraph(const string &prefix, CsrGraph &graph) {
   return true;
 }
 
+bool resolveObjectives(CsrGraph &graph, int requested) {
+  if (graph.numberOfObjectives > 0) {
+    return true;
+  }
+  if (graph.numberOfEdges() == 0 && requested >= 1 && requested <= 32) {
+    graph.numberOfObjectives = requested;
+    return true;
+  }
+  cout << "Error: the graph has no edges, so the number of objectives "
+          "cannot be inferred from its values file (pass -k K).\n";
+  return false;
+}
+
 bool writeCsrGraph(const string &prefix, const CsrGraph &graph) {
   TextWriter rows(prefix + "RowPtr.txt");
   TextWriter cols(prefix + "ColInd.txt");
@@ -462,6 +475,10 @@ bool readChangeBatch(const string &insertPath, const string &deletePath,
                      ChangeBatch &batch) {
   batch = ChangeBatch();
   batch.numberOfObjectives = numberOfObjectives;
+  if (numberOfObjectives <= 0) {
+    cout << "Error: a change batch needs at least one objective.\n";
+    return false;
+  }
   auto inRange = [&](long long x) { return x >= 0 && x < numberOfNodes; };
 
   string text;
