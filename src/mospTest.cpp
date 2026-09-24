@@ -609,6 +609,33 @@ void runRegressions(unsigned int) {
   cout << "regressions: " << cases.size() + 1 << " cases\n";
 }
 
+/// Packing boundary: on the path 0 -> 1 -> ... -> n-1 with n = 2^16 + 1 and
+/// every weight 2^31-1, (n - 1) * maxWeight still fits next to the 17
+/// parent-id bits, but a candidate relaxed from the farthest vertex,
+/// (n - 1) * maxWeight + maxWeight, does not. The inserted edge
+/// n-1 -> 1 makes the pull pass form exactly that candidate; it must not
+/// wrap around to a small (wrong) distance for vertex 1.
+void runPackingBoundary() {
+  const int n = (1 << 16) + 1;
+  CsrGraph graph;
+  graph.numberOfNodes = n;
+  graph.numberOfObjectives = 1;
+  graph.rowPtr.resize(n + 1);
+  for (int u = 0; u <= n; ++u) {
+    graph.rowPtr[u] = min(u, n - 1);
+  }
+  for (int u = 0; u + 1 < n; ++u) {
+    graph.colInd.push_back(u + 1);
+    graph.weights.push_back(INT_MAX);
+  }
+  ChangeBatch batch;
+  batch.numberOfObjectives = 1;
+  batch.insertFrom = {n - 1};
+  batch.insertTo = {1};
+  batch.insertWeights = {INT_MAX};
+  checkPipeline(g_work + "/packing-boundary", graph, batch, 0, {});
+}
+
 /// Large weights: (n - 1) * maxWeight does not fit next to the parent ids
 /// in a 64-bit word, so the search keeps distances only and recovers
 /// the parents afterwards (the path used beyond ~2^25 vertices).
@@ -667,7 +694,10 @@ void runLargeWeights(unsigned int seed) {
                 source);
     ++cases;
   }
-  cout << "large-weights: " << cases << " cases (distance-only fallback)\n";
+  runPackingBoundary();
+  ++cases;
+  cout << "large-weights: " << cases
+       << " cases (distance-only fallback, packing boundary)\n";
 }
 
 /// Uniform generator mode reproduces generateChangedEdges() exactly.

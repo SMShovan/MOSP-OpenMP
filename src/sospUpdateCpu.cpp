@@ -28,8 +28,8 @@
  * (canonical trees); only improved vertices are expanded.
  *
  * Per-thread output lists are merged at prefix-sum offsets (ListGather).
- * If (n - 1) * maxWeight does not fit next to the parent ids, the words
- * hold the distance alone and parents are recovered in one pass over the
+ * If n * maxWeight (a distance plus one edge) does not fit next to the
+ * parent ids, the words hold the distance alone and parents are recovered in one pass over the
  * out-edges after the search.
  * ============================================================================
  */
@@ -75,13 +75,15 @@ struct Packing {
   u64 maxDistance() const { return (PACKED_INF >> parentBits) - 1; }
 };
 
-Packing makePacking(int numberOfNodes, u64 bound) {
+/// @p largestCandidate: the largest distance a word may have to hold,
+/// including candidates formed from a tree distance plus one edge.
+Packing makePacking(int numberOfNodes, u64 largestCandidate) {
   int bits = 1;
   while ((1ULL << bits) - 1 < static_cast<u64>(numberOfNodes)) {
     ++bits;
   }
   Packing packed{bits, (1ULL << bits) - 1};
-  return bound <= packed.maxDistance() ? packed : Packing{0, 0};
+  return largestCandidate <= packed.maxDistance() ? packed : Packing{0, 0};
 }
 
 inline u64 load(const u64 *p) { return __atomic_load_n(p, __ATOMIC_RELAXED); }
@@ -295,7 +297,11 @@ bool choosePacking(int n, long long maxWeight, Packing &packing, u64 &bound) {
     return false;
   }
   bound = weight * hops;
-  packing = makePacking(n, bound);
+  // Tree distances are at most bound, but a relaxation or the pull pass
+  // forms bound + weight before comparing (e.g. from the farthest vertex
+  // back into the tree): that value must fit next to the parent bits too,
+  // or the shift drops its top bits and a wrong small distance wins.
+  packing = makePacking(n, bound + weight);
   return true;
 }
 

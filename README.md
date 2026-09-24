@@ -140,10 +140,13 @@ would disconnect a vertex from the source.
 - **Disconnection:** vertices that the batch cuts off from the source get
   distance INF and parent -1 (the update invalidates the subtrees of
   deleted or weight-increased tree edges instead of counting to infinity).
-- **Weights** must be positive integers; distances are 64-bit.
+- **Weights** must be integers in [1, 2^31-1] (the loaders reject other
+  values, and tree files must list every vertex once); distances are
+  64-bit.
 - **Scale:** the search packs (distance, parent) into 64 bits when
-  (n - 1) * maxWeight fits next to the parent ids and otherwise falls back
-  to 64-bit distances with a parent-recovery pass.
+  n * maxWeight (the longest path plus one edge) fits next to the parent
+  ids and otherwise falls back to 64-bit distances with a
+  parent-recovery pass.
 - **Tracked files:** `data/`, `output/`, `tests/` and `parallelStressTest/`
   hold outputs of earlier runs; `make test` runs everything inside
   `test-output/` and leaves them untouched, but `./bin/main` and `make run`
