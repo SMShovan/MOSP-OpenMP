@@ -352,8 +352,9 @@ bool writeChangeBatch(const ChangeBatch &batch, const string &insertPath,
                       const string &deletePath) {
   for (const string &path : {insertPath, deletePath}) {
     filesystem::path parent = filesystem::path(path).parent_path();
+    error_code ec;
     if (!parent.empty()) {
-      filesystem::create_directories(parent);
+      filesystem::create_directories(parent, ec); // failure: open fails
     }
   }
   ofstream insertFile(insertPath), deleteFile(deletePath);

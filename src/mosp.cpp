@@ -313,10 +313,18 @@ int main(int argc, char **argv) {
     // Every output file is independent: write them concurrently.
     auto tw = chrono::steady_clock::now();
     ScopedStage stage("write_outputs");
+    vector<string> dirs{opt.out + "/combinedGraph"};
     for (int k = 0; k < K; ++k) {
-      filesystem::create_directories(opt.out + "/obj" + to_string(k));
+      dirs.push_back(opt.out + "/obj" + to_string(k));
     }
-    filesystem::create_directories(opt.out + "/combinedGraph");
+    for (const string &dir : dirs) {
+      error_code ec;
+      filesystem::create_directories(dir, ec);
+      if (ec) {
+        cerr << "cannot create " << dir << ": " << ec.message() << "\n";
+        return 1;
+      }
+    }
     vector<function<bool()>> writes;
     for (int k = 0; k < K; ++k) {
       string dir = opt.out + "/obj" + to_string(k);
@@ -384,10 +392,12 @@ int main(int argc, char **argv) {
            tm.combined, c.numberOfEdges, c.scale, c.delta, c.search.iterations,
            c.search.pushes);
   }
+  bool timingWritten = true;
   if (!opt.timingCsv.empty()) {
     recordStage("TOTAL_end_to_end", endToEnd);
     if (!writeInstrumentationCsv(opt.timingCsv)) {
       cerr << "cannot write " << opt.timingCsv << "\n";
+      timingWritten = false;
     }
   }
   printf("RESULT compute_ms=%.3f end_to_end_ms=%.3f threads=%d\n",
@@ -398,5 +408,7 @@ int main(int argc, char **argv) {
       !validate(updated, result, opt.source, opt.pref, opt.canonicalize)) {
     return 1;
   }
-  return 0;
+  // A missing timing file fails the run (after the summary line), so
+  // scripts that read the CSV notice.
+  return timingWritten ? 0 : 1;
 }
