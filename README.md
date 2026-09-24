@@ -72,7 +72,8 @@ make test TEST_THREADS=16   # more OpenMP threads for the tests
   count-to-infinity regressions, a cyclic input tree, the distance-only
   fallback for large weights (random weights, and equal weights whose
   many ties exercise the lowest-id parent recovery), the boundary of the
-  packed format, generator and batch-application equivalence checks.
+  packed format, the binary cache (source identity, damaged files),
+  generator and batch-application equivalence checks.
 
 ## Running on real graphs
 
@@ -97,13 +98,20 @@ mosp --graph <csrPrefix> --changes <dir> --init <dir> [options]
   --source s         source vertex (default 0)
   --pref p1,..,pK    preference vector (default all 1s; lower = higher priority)
   --delta D          near-far bucket width (default 32 * avg weight / avg degree)
-  --cache file       binary cache of the graph (written if missing or stale)
+  --cache file       binary cache of the graph (see below)
   --canonicalize     normalize initial trees from other tools to the tie rule
   --out dir          output directory; --no-output to skip writing
   --validate         check all trees against host Dijkstra
   --timing file.csv  per-stage timings and counters
   --quiet            only the summary line
 ```
+
+`--cache` keeps a binary copy of the CSR next to the text. The cache
+records the canonical path, size and modification time of the three text
+files it was built from and is used only when they still match; a cache
+that is stale, damaged or was written for another graph is rebuilt (with
+a note on stderr). Rewriting a text file with identical size and
+modification time is not detected; delete the cache in that case.
 
 The summary line `RESULT compute_ms=<a> end_to_end_ms=<b> threads=<t>`
 reports (a) the parallel compute of the K SOSP updates and of Steps 2-3

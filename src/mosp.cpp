@@ -17,7 +17,9 @@
  *                      lower value = higher priority, thesis Ch. 4 Step 2)
  *   --delta <D>        near-far bucket width (default: 32 * average weight /
  *                      average out-degree, per objective)
- *   --cache <file>     binary cache of the graph (written if missing/stale)
+ *   --cache <file>     binary cache of the graph; used only if it was written
+ *                      from the same text files (path, size, modification
+ *                      time), otherwise rebuilt
  *   --canonicalize     normalize the initial trees to the lowest-id tie rule
  *                      (for trees from other tools; not timed)
  *   --out <dir>        output directory (default mosp-output)
@@ -336,13 +338,21 @@ int main(int argc, char **argv) {
       return writeParents(combinedDir + "/SSSPTreeCsr.txt",
                           result.combinedParent);
     });
+    bool treeEdgeMissing = false;
     writes.push_back([&] {
       vector<long long> costs;
-      return mospPathCosts(updated, result.combinedParent, opt.source,
-                           costs) &&
-             writeCosts(combinedDir + "/mospCosts.txt", costs, KG);
+      if (!mospPathCosts(updated, result.combinedParent, opt.source, costs)) {
+        treeEdgeMissing = true;
+        return false;
+      }
+      return writeCosts(combinedDir + "/mospCosts.txt", costs, KG);
     });
     const bool ok = runConcurrently(writes);
+    if (treeEdgeMissing) {
+      cerr << "Error: an edge of the MOSP tree is missing from the updated "
+              "graph (do the initial trees belong to this graph?)\n";
+      return 1;
+    }
     if (!ok) {
       cerr << "cannot write the outputs to " << opt.out << "\n";
       return 1;

@@ -18,7 +18,7 @@
  *
  * Usage: mospTest [--seed S] [--work DIR] [--only GROUP]
  *   GROUP: thesis-example, regressions, large-weights, generator, apply,
- *          sosp (default: all). Exit code 0 = all checks passed.
+ *          cache, sosp (default: all). Exit code 0 = all checks passed.
  */
 
 #include "changeGenerator.h"
@@ -34,7 +34,9 @@
 #include "validation.h"
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -47,6 +49,7 @@
 #include <vector>
 
 using namespace std;
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -761,6 +764,64 @@ void runLargeWeights(unsigned int seed) {
        << " cases (distance-only fallback, ties, packing boundary)\n";
 }
 
+/// The binary cache (--cache) is used only for the text files it was
+/// written from, and a damaged cache is rejected instead of trusted.
+void runCache(unsigned int seed) {
+  const string dir = g_work + "/cache";
+  auto same = [](const CsrGraph &a, const CsrGraph &b) {
+    return a.numberOfNodes == b.numberOfNodes &&
+           a.numberOfObjectives == b.numberOfObjectives &&
+           a.rowPtr == b.rowPtr && a.colInd == b.colInd &&
+           a.weights == b.weights;
+  };
+  const CsrGraph a = gridGraph(12, 10, 2, 50, 0.1, seed * 5u + 1u);
+  const CsrGraph b = gridGraph(12, 10, 2, 50, 0.1, seed * 5u + 2u);
+  const string prefixA = dir + "/a/graphCsr", prefixB = dir + "/b/graphCsr";
+  const string cache = dir + "/graph.bin";
+  writeCsrGraph(prefixA, a);
+  writeCsrGraph(prefixB, b);
+  // B's text files are older than any cache written below.
+  const auto old = filesystem::file_time_type::clock::now() - 24h * 365;
+  for (const char *suffix : {"RowPtr.txt", "ColInd.txt", "Values.txt"}) {
+    filesystem::last_write_time(prefixB + suffix, old);
+  }
+
+  CsrGraph loaded;
+  report("cache", loadCsrGraph(prefixA, loaded, cache) && same(loaded, a),
+         "first load of A through the cache");
+  string identity;
+  report("cache",
+         loadCsrGraphBinary(cache, loaded, &identity) && same(loaded, a) &&
+             identity == csrSourceIdentity(prefixA),
+         "the cache does not hold A and its source identity");
+  report("cache", loadCsrGraph(prefixB, loaded, cache) && same(loaded, b),
+         "B loaded A's cache (older text files, same cache path)");
+  report("cache", loadCsrGraph(prefixA, loaded, cache) && same(loaded, a),
+         "A loaded B's cache");
+
+  // Damage colInd[0] (after magic, identity, header and row pointers).
+  loadCsrGraphBinary(cache, loaded, &identity);
+  const long long offset =
+      8 + 4 + static_cast<long long>(identity.size()) + 8 + 8 +
+      4LL * (a.numberOfNodes + 1);
+  {
+    FILE *file = fopen(cache.c_str(), "r+b");
+    const int bad = 100000;
+    report("cache",
+           file != nullptr && fseek(file, offset, SEEK_SET) == 0 &&
+               fwrite(&bad, sizeof(bad), 1, file) == 1,
+           "could not patch the cache");
+    if (file != nullptr) {
+      fclose(file);
+    }
+  }
+  report("cache", !loadCsrGraphBinary(cache, loaded),
+         "a cache with a column index out of range was accepted");
+  report("cache", loadCsrGraph(prefixA, loaded, cache) && same(loaded, a),
+         "a damaged cache was not rebuilt from the text");
+  cout << "cache: 1 cases (source identity, damaged cache)\n";
+}
+
 /// Uniform generator mode reproduces generateChangedEdges() exactly.
 void runGeneratorEquivalence(unsigned int seed) {
   int cases = 0;
@@ -870,6 +931,7 @@ int main(int argc, char **argv) {
       {"large-weights", runLargeWeights},
       {"generator", runGeneratorEquivalence},
       {"apply", runApplyEquivalence},
+      {"cache", runCache},
       {"sosp", runSosp},
   };
   bool ran = false;

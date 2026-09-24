@@ -76,19 +76,44 @@ bool resolveObjectives(CsrGraph &graph, int requested);
 /** @brief Write a graph in the same three-file text format. */
 bool writeCsrGraph(const std::string &prefix, const CsrGraph &graph);
 
-/** @brief Save a graph as one binary file (a cache of the text format). */
-bool saveCsrGraphBinary(const std::string &path, const CsrGraph &graph);
+/**
+ * @brief Identity of the text files of a graph: the canonical path, size
+ *        and modification time of <prefix>RowPtr/ColInd/Values.txt
+ *        ("" if a file is missing).
+ */
+std::string csrSourceIdentity(const std::string &prefix);
 
-/** @brief Load a graph written by saveCsrGraphBinary(). */
-bool loadCsrGraphBinary(const std::string &path, CsrGraph &graph);
+/**
+ * @brief Save a graph as one binary file (a cache of the text format).
+ *
+ * @param sourcePrefix Text files the graph was read from; their identity
+ *                     is stored so loadCsrGraph() can tell whether the
+ *                     cache belongs to them ("" = none).
+ */
+bool saveCsrGraphBinary(const std::string &path, const CsrGraph &graph,
+                        const std::string &sourcePrefix = "");
+
+/**
+ * @brief Load a graph written by saveCsrGraphBinary().
+ *
+ * @details
+ * Fails on a wrong magic (e.g. an older format), sizes that do not match
+ * the file, or a malformed graph (the checks of readCsrGraph()).
+ *
+ * @param sourceIdentity If non-null, receives the stored source identity.
+ */
+bool loadCsrGraphBinary(const std::string &path, CsrGraph &graph,
+                        std::string *sourceIdentity = nullptr);
 
 /**
  * @brief Load a text CSR graph, optionally through a binary cache.
  *
  * @details
- * With a non-empty @p cachePath the binary file is used when it exists and
- * is newer than the three text files; otherwise the text is parsed and the
- * cache is (re)written.
+ * With a non-empty @p cachePath the binary file is used only if it loads
+ * and was written from the three text files as they are now (same
+ * canonical paths, sizes and modification times, see
+ * csrSourceIdentity()); otherwise the text is parsed and the cache is
+ * (re)written, with a note on stderr when an existing cache is replaced.
  */
 bool loadCsrGraph(const std::string &prefix, CsrGraph &graph,
                   const std::string &cachePath = "");

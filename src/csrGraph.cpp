@@ -50,11 +50,15 @@ bool readWholeFile(const string &path, string &buffer) {
   return got == buffer.size();
 }
 
-void createParentDirectory(const string &path) {
+/// Never throws (it also runs inside OpenMP regions); on failure the
+/// following fopen fails and the caller reports the path.
+bool createParentDirectory(const string &path) {
   filesystem::path parent = filesystem::path(path).parent_path();
+  error_code ec;
   if (!parent.empty()) {
-    filesystem::create_directories(parent);
+    filesystem::create_directories(parent, ec);
   }
+  return !ec;
 }
 
 /// Buffered text writer with fast integer formatting.
@@ -183,14 +187,8 @@ bool readIntFile(const string &path, vector<int> &values, bool &outOfRange) {
   return true;
 }
 
-bool fileIsNewer(const string &a, const string &b) {
-  error_code ec1, ec2;
-  auto ta = filesystem::last_write_time(a, ec1);
-  auto tb = filesystem::last_write_time(b, ec2);
-  return !ec1 && !ec2 && ta >= tb;
-}
-
-constexpr char kBinaryMagic[8] = {'M', 'O', 'S', 'P', 'C', 'S', 'R', '1'};
+/// Version 2 stores the identity of the source text files.
+constexpr char kBinaryMagic[8] = {'M', 'O', 'S', 'P', 'C', 'S', 'R', '2'};
 
 } // namespace
 
@@ -252,6 +250,56 @@ bool readValuesFile(const string &path, vector<int> &weights, int &objectives,
     scanner.advance(); // newline
   }
   return true;
+}
+
+/// Structural checks shared by the text and the binary loaders; returns
+/// an error message, or nullptr if the graph is well formed.
+const char *checkCsrStructure(const CsrGraph &graph, bool checkWeights) {
+  const int n = graph.numberOfNodes;
+  if (n < 1 || graph.rowPtr.size() != static_cast<size_t>(n) + 1) {
+    return "CSR row pointers missing.";
+  }
+  if (graph.rowPtr[0] != 0) {
+    return "CSR row pointers must start at 0.";
+  }
+  const int *rowPtr = graph.rowPtr.data();
+  bool bad = false;
+#pragma omp parallel for schedule(static) reduction(|| : bad)
+  for (int i = 0; i < n; ++i) {
+    bad = bad || rowPtr[i + 1] < rowPtr[i];
+  }
+  if (bad) {
+    return "CSR row pointers are not monotone.";
+  }
+  const size_t m = static_cast<size_t>(graph.rowPtr[n]);
+  if (graph.colInd.size() != m) {
+    return "CSR column index file missing or size mismatch.";
+  }
+  const int *colInd = graph.colInd.data();
+  const long long edges = static_cast<long long>(m);
+#pragma omp parallel for schedule(static) reduction(|| : bad)
+  for (long long e = 0; e < edges; ++e) {
+    bad = bad || colInd[e] < 0 || colInd[e] >= n;
+  }
+  if (bad) {
+    return "CSR column index out of range.";
+  }
+  const int K = graph.numberOfObjectives;
+  if (K < 0 || (K == 0 ? m != 0 : graph.weights.size() != m * K)) {
+    return "values size mismatch.";
+  }
+  if (checkWeights) {
+    const int *weights = graph.weights.data();
+    const long long count = static_cast<long long>(graph.weights.size());
+#pragma omp parallel for schedule(static) reduction(|| : bad)
+    for (long long i = 0; i < count; ++i) {
+      bad = bad || weights[i] < 1;
+    }
+    if (bad) {
+      return kWeightRangeError;
+    }
+  }
+  return nullptr;
 }
 
 } // namespace
@@ -316,37 +364,25 @@ bool readCsrGraph(const string &prefix, CsrGraph &graph) {
          << "RowPtr.txt\n";
     return false;
   }
-  graph.numberOfNodes = static_cast<int>(graph.rowPtr.size()) - 1;
-  const int numberOfEdges = graph.rowPtr.back();
-  if (graph.rowPtr[0] != 0) {
-    cout << "Error: CSR row pointers must start at 0.\n";
-    return false;
-  }
-  for (int i = 0; i < graph.numberOfNodes; ++i) {
-    if (graph.rowPtr[i + 1] < graph.rowPtr[i]) {
-      cout << "Error: CSR row pointers are not monotone.\n";
-      return false;
-    }
-  }
-  if (!colsOk || static_cast<int>(graph.colInd.size()) != numberOfEdges) {
+  if (!colsOk) {
     cout << "Error: CSR column index file missing or size mismatch.\n";
     return false;
-  }
-  for (int v : graph.colInd) {
-    if (v < 0 || v >= graph.numberOfNodes) {
-      cout << "Error: CSR column index out of range.\n";
-      return false;
-    }
   }
   if (!valuesOk) {
     cout << "Error: " << valuesError << "\n";
     return false;
   }
-  if (lines != numberOfEdges) {
+  graph.numberOfNodes = static_cast<int>(graph.rowPtr.size()) - 1;
+  graph.numberOfObjectives = objectives;
+  // Weights were range-checked while parsing.
+  if (const char *error = checkCsrStructure(graph, false)) {
+    cout << "Error: " << error << "\n";
+    return false;
+  }
+  if (lines != graph.numberOfEdges()) {
     cout << "Error: values size mismatch.\n";
     return false;
   }
-  graph.numberOfObjectives = objectives;
   return true;
 }
 
@@ -392,15 +428,47 @@ bool writeCsrGraph(const string &prefix, const CsrGraph &graph) {
   return rows.close() && cols.close() && values.close();
 }
 
-bool saveCsrGraphBinary(const string &path, const CsrGraph &graph) {
-  createParentDirectory(path);
+string csrSourceIdentity(const string &prefix) {
+  string identity;
+  for (const char *suffix : {"RowPtr.txt", "ColInd.txt", "Values.txt"}) {
+    error_code ec;
+    const filesystem::path file =
+        filesystem::weakly_canonical(prefix + suffix, ec);
+    if (ec) {
+      return "";
+    }
+    const auto size = filesystem::file_size(file, ec);
+    if (ec) {
+      return "";
+    }
+    const auto time = filesystem::last_write_time(file, ec);
+    if (ec) {
+      return "";
+    }
+    identity += file.string() + "\n" + to_string(size) + "\n" +
+                to_string(time.time_since_epoch().count()) + "\n";
+  }
+  return identity;
+}
+
+bool saveCsrGraphBinary(const string &path, const CsrGraph &graph,
+                        const string &sourcePrefix) {
+  const string identity =
+      sourcePrefix.empty() ? string() : csrSourceIdentity(sourcePrefix);
+  if (!createParentDirectory(path)) {
+    return false;
+  }
   FILE *file = fopen(path.c_str(), "wb");
   if (file == nullptr) {
     return false;
   }
+  const uint32_t identityLength = static_cast<uint32_t>(identity.size());
   int32_t header[2] = {graph.numberOfNodes, graph.numberOfObjectives};
   int64_t numberOfEdges = graph.numberOfEdges();
   bool ok = fwrite(kBinaryMagic, 1, 8, file) == 8 &&
+            fwrite(&identityLength, sizeof(identityLength), 1, file) == 1 &&
+            fwrite(identity.data(), 1, identity.size(), file) ==
+                identity.size() &&
             fwrite(header, sizeof(header), 1, file) == 1 &&
             fwrite(&numberOfEdges, sizeof(numberOfEdges), 1, file) == 1 &&
             fwrite(graph.rowPtr.data(), sizeof(int), graph.rowPtr.size(),
@@ -411,24 +479,48 @@ bool saveCsrGraphBinary(const string &path, const CsrGraph &graph) {
                    file) == graph.weights.size();
   ok = (fclose(file) == 0) && ok;
   if (!ok) {
-    filesystem::remove(path);
+    error_code ec;
+    filesystem::remove(path, ec);
   }
   return ok;
 }
 
-bool loadCsrGraphBinary(const string &path, CsrGraph &graph) {
+bool loadCsrGraphBinary(const string &path, CsrGraph &graph,
+                        string *sourceIdentity) {
+  graph = CsrGraph();
   FILE *file = fopen(path.c_str(), "rb");
   if (file == nullptr) {
     return false;
   }
+  struct stat info;
+  const long long fileSize =
+      fstat(fileno(file), &info) == 0 ? static_cast<long long>(info.st_size)
+                                      : -1;
   char magic[8];
+  uint32_t identityLength = 0;
+  string identity;
   int32_t header[2];
   int64_t numberOfEdges = 0;
   bool ok = fread(magic, 1, 8, file) == 8 &&
             memcmp(magic, kBinaryMagic, 8) == 0 &&
-            fread(header, sizeof(header), 1, file) == 1 &&
-            fread(&numberOfEdges, sizeof(numberOfEdges), 1, file) == 1 &&
-            header[0] > 0 && header[1] > 0 && numberOfEdges >= 0;
+            fread(&identityLength, sizeof(identityLength), 1, file) == 1 &&
+            identityLength <= (1u << 16);
+  if (ok) {
+    identity.resize(identityLength);
+    ok = fread(&identity[0], 1, identityLength, file) == identityLength &&
+         fread(header, sizeof(header), 1, file) == 1 &&
+         fread(&numberOfEdges, sizeof(numberOfEdges), 1, file) == 1 &&
+         header[0] > 0 && header[1] >= 0 && numberOfEdges >= 0 &&
+         numberOfEdges <= INT_MAX;
+  }
+  // The sizes must account for the file exactly before anything is
+  // allocated (a damaged header must not request gigabytes).
+  if (ok) {
+    const long long words = static_cast<long long>(header[0]) + 1 +
+                            numberOfEdges * (1LL + header[1]);
+    ok = fileSize == 8 + 4 + static_cast<long long>(identityLength) + 8 + 8 +
+                         words * static_cast<long long>(sizeof(int));
+  }
   if (ok) {
     graph.numberOfNodes = header[0];
     graph.numberOfObjectives = header[1];
@@ -437,30 +529,45 @@ bool loadCsrGraphBinary(const string &path, CsrGraph &graph) {
     graph.weights.resize(static_cast<size_t>(numberOfEdges) * header[1]);
     ok = fread(graph.rowPtr.data(), sizeof(int), graph.rowPtr.size(), file) ==
              graph.rowPtr.size() &&
-         fread(graph.colInd.data(), sizeof(int), graph.colInd.size(), file) ==
-             graph.colInd.size() &&
+         fread(graph.colInd.data(), sizeof(int), graph.colInd.size(),
+               file) == graph.colInd.size() &&
          fread(graph.weights.data(), sizeof(int), graph.weights.size(),
                file) == graph.weights.size() &&
-         graph.rowPtr.back() == numberOfEdges;
+         graph.rowPtr.back() == numberOfEdges &&
+         checkCsrStructure(graph, true) == nullptr;
   }
   fclose(file);
-  return ok;
+  if (!ok) {
+    graph = CsrGraph();
+    return false;
+  }
+  if (sourceIdentity != nullptr) {
+    *sourceIdentity = identity;
+  }
+  return true;
 }
 
 bool loadCsrGraph(const string &prefix, CsrGraph &graph,
                   const string &cachePath) {
   if (!cachePath.empty()) {
-    bool fresh = fileIsNewer(cachePath, prefix + "RowPtr.txt") &&
-                 fileIsNewer(cachePath, prefix + "ColInd.txt") &&
-                 fileIsNewer(cachePath, prefix + "Values.txt");
-    if (fresh && loadCsrGraphBinary(cachePath, graph)) {
-      return true;
+    // Use the cache only if it was written from these three files as they
+    // are now (same canonical paths, sizes and modification times).
+    const string identity = csrSourceIdentity(prefix);
+    error_code ec;
+    if (!identity.empty() && filesystem::exists(cachePath, ec)) {
+      string cached;
+      if (loadCsrGraphBinary(cachePath, graph, &cached) &&
+          cached == identity) {
+        return true;
+      }
+      cerr << "Note: rebuilding the binary cache " << cachePath
+           << " (stale, damaged or written for another graph).\n";
     }
   }
   if (!readCsrGraph(prefix, graph)) {
     return false;
   }
-  if (!cachePath.empty() && !saveCsrGraphBinary(cachePath, graph)) {
+  if (!cachePath.empty() && !saveCsrGraphBinary(cachePath, graph, prefix)) {
     cout << "Warning: could not write binary cache " << cachePath << "\n";
   }
   return true;
