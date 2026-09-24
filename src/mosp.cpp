@@ -22,8 +22,11 @@
  *   --out <dir>        output directory (default mosp-output)
  *   --no-output        do not write the result files
  *   --validate         check every SOSP tree and the MOSP tree against host
- *                      Dijkstra (distances, parent consistency, canonical
- *                      parents)
+ *                      Dijkstra: distances and parent consistency, and with
+ *                      --canonicalize also identical (lowest-id) parents.
+ *                      Without it, vertices the batch does not touch keep
+ *                      their input parents, which other tools may have
+ *                      chosen differently among equal-distance parents.
  *   --timing <csv>     record per-stage timings and counters to a CSV file
  *   --quiet            print only the summary line
  *
@@ -172,7 +175,7 @@ bool writeCosts(const string &path, const vector<long long> &costs, int K) {
 
 /// Check every tree and the MOSP tree against host Dijkstra.
 bool validate(const CsrGraph &updated, const MospResult &result, int source,
-              const vector<int> &pref) {
+              const vector<int> &pref, bool requireCanonical) {
   const int n = updated.numberOfNodes;
   const int K = result.numberOfObjectives;
   CsrGraph reverse;
@@ -182,11 +185,11 @@ bool validate(const CsrGraph &updated, const MospResult &result, int source,
     vector<long long> refDist;
     vector<int> refParent;
     dijkstraCsrGraph(updated, k, source, refDist, refParent);
-    TreeCheck check = checkSospTree(reverse, k, source,
-                                    slice(result.distances, k, n),
-                                    slice(result.parents, k, n), refDist,
-                                    &refParent);
-    bool ok = check.ok(true);
+    TreeCheck check = checkSospTree(
+        reverse, k, source, slice(result.distances, k, n),
+        slice(result.parents, k, n), refDist,
+        requireCanonical ? &refParent : nullptr);
+    bool ok = check.ok(requireCanonical);
     allOk = allOk && ok;
     cout << "VALIDATE obj" << k << " " << (ok ? "PASS" : "FAIL") << " ("
          << check.summary() << ")\n";
@@ -202,6 +205,7 @@ bool validate(const CsrGraph &updated, const MospResult &result, int source,
   TreeCheck check =
       checkSospTree(combinedReverse, 0, source, result.combinedDistances,
                     result.combinedParent, refDist, &refParent);
+  // Computed from scratch, so always canonical: must equal Dijkstra exactly.
   bool ok = check.ok(true);
   cout << "VALIDATE combined " << (ok ? "PASS" : "FAIL") << " ("
        << check.summary() << ")\n";
@@ -340,7 +344,8 @@ int main(int argc, char **argv) {
          tm.compute(), endToEnd, omp_get_max_threads());
   fflush(stdout);
 
-  if (opt.validate && !validate(updated, result, opt.source, opt.pref)) {
+  if (opt.validate &&
+      !validate(updated, result, opt.source, opt.pref, opt.canonicalize)) {
     return 1;
   }
   return 0;
