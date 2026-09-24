@@ -182,13 +182,17 @@ bool runAndCheck(const string &label, const UpdateFunction &update,
 }
 
 /// Host reference for the combined graph: edge (p,v) is in the combined
-/// graph iff p is the parent of v in some tree; weight K + 1 - membership.
-CsrGraph combinedReference(const vector<vector<int>> &parents, int source) {
+/// graph iff p is the parent of v in some tree T_i; its weight is
+/// L * (K + 1) - sum_i L / Pref_i over those trees (K + 1 - membership
+/// for Pref = 1s).
+CsrGraph combinedReference(const vector<vector<int>> &parents, int source,
+                           const vector<int> &pref) {
   const int K = static_cast<int>(parents.size());
   const int n = static_cast<int>(parents[0].size());
   CsrGraph combined;
   combined.numberOfNodes = n;
   combined.numberOfObjectives = 1;
+  const long long scale = preferenceScale(pref, K);
   vector<vector<pair<int, int>>> rows(n);
   for (int v = 0; v < n; ++v) {
     if (v == source) {
@@ -201,11 +205,12 @@ CsrGraph combinedReference(const vector<vector<int>> &parents, int source) {
         continue;
       }
       seen.push_back(p);
-      int membership = 0;
+      unsigned int mask = 0;
       for (int j = 0; j < K; ++j) {
-        membership += parents[j][v] == p ? 1 : 0;
+        mask |= parents[j][v] == p ? 1u << j : 0u;
       }
-      rows[p].push_back({v, K + 1 - membership});
+      rows[p].push_back(
+          {v, static_cast<int>(combinedEdgeWeight(mask, pref, K, scale))});
     }
   }
   combined.rowPtr.assign(n + 1, 0);
@@ -220,11 +225,12 @@ CsrGraph combinedReference(const vector<vector<int>> &parents, int source) {
 }
 
 void checkCombined(const CaseFiles &files, const vector<string> &trees,
-                   int n, int source) {
+                   int n, int source, const vector<int> &pref) {
   const int K = static_cast<int>(trees.size());
-  string dir = files.dir + "/combined";
+  string dir = files.dir + "/combined" + to_string(pref.empty() ? 0 : pref[0]);
   if (!parallelCombinedGraph(files.graph, trees, K, source, dir,
-                             dir + "/distances.txt", dir + "/tree.txt")) {
+                             dir + "/distances.txt", dir + "/tree.txt",
+                             pref)) {
     report("combined", false, files.dir + ": call failed");
     return;
   }
@@ -232,7 +238,7 @@ void checkCombined(const CaseFiles &files, const vector<string> &trees,
   for (int k = 0; k < K; ++k) {
     readParents(trees[k], n, parents[k]);
   }
-  CsrGraph combined = combinedReference(parents, source), reverse;
+  CsrGraph combined = combinedReference(parents, source, pref), reverse;
   transposeCsrGraph(combined, reverse);
   vector<long long> dist, refDist;
   vector<int> parent, refParent;
@@ -399,13 +405,115 @@ void runSosp(unsigned int seed) {
         checkDeterminism(files, "parallel/" + set.name, graph.numberOfNodes,
                          graph.numberOfObjectives, source);
         if (static_cast<int>(trees.size()) == graph.numberOfObjectives) {
-          checkCombined(files, trees, graph.numberOfNodes, source);
+          // Default Pref (all 1s) and a skewed Pref = (K+1, 1, K+1, ...).
+          checkCombined(files, trees, graph.numberOfNodes, source, {});
+          vector<int> skewed(graph.numberOfObjectives, graph.numberOfObjectives + 1);
+          skewed[graph.numberOfObjectives > 1 ? 1 : 0] = 1;
+          checkCombined(files, trees, graph.numberOfNodes, source, skewed);
         }
         ++cases;
       }
     }
   }
   cout << "sosp: " << cases << " cases (parallel, sequential, combined)\n";
+}
+
+/// The worked example of thesis Ch. 4 (Fig. "Finding a single MOSP"):
+/// three SOSP updates, then the combined graph with Pref = {4,1,4} and
+/// {4,4,1}. Vertices u1..u7 are 0..6, source u1.
+///
+/// The edge u3->u6 (4,2,8) drawn in the preliminaries figure is omitted: with
+/// it, the objective-1 tree of the example (u6 reached through u5 at 11)
+/// would not be a shortest-path tree (u1->u3->u6 costs 8). Without it the
+/// three updated trees are exactly those of sub-figures (a)-(c).
+void runThesisExample(unsigned int) {
+  const int n = 7, K = 3, source = 0;
+  struct E { int u, v, w1, w2, w3; };
+  vector<E> edges = {{0, 1, 2, 1, 5},   {0, 2, 4, 1, 1},  {2, 1, 10, 15, 2},
+                     {1, 3, 2, 4, 2},   {2, 3, 5, 16, 3}, {3, 4, 1, 1, 1},
+                     {4, 1, 4, 3, 2},   {4, 5, 1, 2, 2},  {4, 6, 5, 6, 2},
+                     {5, 6, 1, 1, 1}};
+  stable_sort(edges.begin(), edges.end(),
+              [](const E &a, const E &b) { return a.u < b.u; });
+  CsrGraph graph;
+  graph.numberOfNodes = n;
+  graph.numberOfObjectives = K;
+  graph.rowPtr.assign(n + 1, 0);
+  for (const auto &e : edges) {
+    ++graph.rowPtr[e.u + 1];
+  }
+  for (int u = 0; u < n; ++u) {
+    graph.rowPtr[u + 1] += graph.rowPtr[u];
+  }
+  for (const auto &e : edges) { // now in row order
+    graph.colInd.push_back(e.v);
+    graph.weights.insert(graph.weights.end(), {e.w1, e.w2, e.w3});
+  }
+  ChangeBatch batch;
+  batch.numberOfObjectives = K;
+  batch.deleteFrom = {1, 4}; // (u2,u4), (u5,u2)
+  batch.deleteTo = {3, 1};
+  batch.insertFrom = {3, 1}; // (u4,u6):(10,2,12), (u2,u6):(12,1,14)
+  batch.insertTo = {5, 5};
+  batch.insertWeights = {10, 2, 12, 12, 1, 14};
+
+  string dir = g_work + "/thesis-example";
+  CaseFiles files = writeCase(dir, graph, batch, source);
+  CsrGraph updated;
+  ChangeBatch copy = batch;
+  applyChangeBatch(graph, copy, updated);
+
+  // Updated SOSP trees of sub-figures (a), (b), (c).
+  const vector<vector<int>> expectedTrees = {{-1, 0, 0, 2, 3, 4, 5},
+                                             {-1, 0, 0, 2, 3, 1, 5},
+                                             {-1, 2, 0, 2, 3, 4, 4}};
+  vector<string> trees;
+  for (int k = 0; k < K; ++k) {
+    string obj = files.init + "/obj" + to_string(k);
+    string out = outputDir(files, "parallel", k);
+    parallelSOSPUpdate(files.graph, obj + "/distances.txt", obj + "/tree.txt",
+                       files.insert, files.remove, k, source,
+                       out + "/distances.txt", out + "/tree.txt");
+    vector<int> parent;
+    readParents(out + "/tree.txt", n, parent);
+    report("thesis-example", parent == expectedTrees[k],
+           "objective " + to_string(k + 1) + " tree differs from the thesis");
+    trees.push_back(out + "/tree.txt");
+  }
+
+  struct Expectation {
+    vector<int> pref;
+    vector<int> pathToU7;           // u7, its parent, ... , u1
+    vector<long long> costOfU7;     // original objective values
+  };
+  const vector<Expectation> expectations = {
+      {{4, 1, 4}, {6, 5, 1, 0}, {15, 3, 20}},     // sub-figures (d), (e)
+      {{4, 4, 1}, {6, 4, 3, 2, 0}, {15, 24, 7}},  // sub-figures (f), (g)
+  };
+  for (const auto &expect : expectations) {
+    string out = dir + "/combined_" + to_string(expect.pref[0]) +
+                 to_string(expect.pref[1]) + to_string(expect.pref[2]);
+    parallelCombinedGraph(files.graph, trees, K, source, out,
+                          out + "/distances.txt", out + "/tree.txt",
+                          expect.pref);
+    vector<int> parent;
+    readParents(out + "/tree.txt", n, parent);
+    vector<int> path{6};
+    while (parent[path.back()] >= 0) {
+      path.push_back(parent[path.back()]);
+    }
+    vector<long long> costs;
+    mospPathCosts(updated, parent, source, costs);
+    vector<long long> costOfU7(costs.begin() + 6 * K, costs.begin() + 7 * K);
+    string label = "Pref={" + to_string(expect.pref[0]) + "," +
+                   to_string(expect.pref[1]) + "," + to_string(expect.pref[2]) +
+                   "}";
+    report("thesis-example", path == expect.pathToU7,
+           label + ": MOSP path to u7 differs from the thesis");
+    report("thesis-example", costOfU7 == expect.costOfU7,
+           label + ": MOSP cost of u7 differs from the thesis");
+  }
+  cout << "thesis-example: 1 case (3 trees, 2 preference vectors)\n";
 }
 
 /// Uniform generator mode reproduces generateChangedEdges() exactly.
@@ -508,6 +616,7 @@ int main(int argc, char **argv) {
       }
     }
   };
+  quiet(runThesisExample);
   quiet(runGeneratorEquivalence);
   quiet(runApplyEquivalence);
   quiet(runSosp);

@@ -12,6 +12,8 @@
  *                      and <dir>/obj<k>/SSSPTreeOriginal.txt
  *   -k <K>             number of objectives to use (default: all in the graph)
  *   --source <s>       source vertex (default 0)
+ *   --pref p1,..,pK    preference vector of the combined graph (default 1s;
+ *                      lower value = higher priority, thesis Ch. 4 Step 2)
  *   --out <dir>        output directory (default mosp-output)
  *   --validate         check every SOSP tree against host Dijkstra on the
  *                      updated graph (distances + parent consistency)
@@ -49,6 +51,7 @@ namespace {
 
 struct Options {
   string graph, changes, init, out = "mosp-output", timingCsv;
+  vector<int> pref;
   int K = 0;
   int source = 0;
   bool validate = false;
@@ -57,7 +60,8 @@ struct Options {
 
 void usage() {
   cerr << "usage: mosp --graph <csrPrefix> --changes <dir> --init <dir>\n"
-          "            [-k K] [--source s] [--out dir] [--validate]\n"
+          "            [-k K] [--source s] [--pref p1,..,pK] [--out dir]\n"
+          "            [--validate]\n"
           "            [--timing file.csv] [--quiet]\n";
 }
 
@@ -88,6 +92,13 @@ bool parseOptions(int argc, char **argv, Options &opt) {
     } else if (a == "--source") {
       if (!next(value)) return false;
       opt.source = atoi(value.c_str());
+    } else if (a == "--pref") {
+      if (!next(value)) return false;
+      istringstream list(value);
+      string item;
+      while (getline(list, item, ',')) {
+        opt.pref.push_back(atoi(item.c_str()));
+      }
     } else if (a == "--validate") {
       opt.validate = true;
     } else if (a == "--quiet") {
@@ -165,7 +176,8 @@ int main(int argc, char **argv) {
     bool ok = parallelCombinedGraph(opt.graph, trees, K, opt.source,
                                     opt.out + "/combinedGraph",
                                     opt.out + "/combinedGraph/distancesCsr.txt",
-                                    opt.out + "/combinedGraph/SSSPTreeCsr.txt");
+                                    opt.out + "/combinedGraph/SSSPTreeCsr.txt",
+                                    opt.pref);
     recordStage("TOTAL_combined_graph", msSince(t));
     if (!ok) {
       cerr << "parallelCombinedGraph failed\n";

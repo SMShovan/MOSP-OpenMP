@@ -14,10 +14,11 @@
  *     An edge (u → v) is in tree k if parent_k[v] == u.
  *
  *   Phase 1 — Count membership & assign weights
- *     For every unique edge across all K trees, count m = number of trees
- *     it belongs to.  Assign weight  w = K + 1 - m:
+ *     For every unique edge across all K trees, record which trees contain
+ *     it and assign the preference weight (scaled by L = lcm(Pref)):
+ *       W'(e) = L * (K + 1) - sum_{i : e in T_i} L / Pref_i
+ *     With the default Pref = (1,...,1) this is w = K + 1 - m:
  *       m == K  →  w = 1  (appears in ALL trees — highest preference)
- *       m == K-1 →  w = 2
  *       ...
  *       m == 1  →  w = K  (appears in ONE tree — lowest preference)
  *
@@ -48,6 +49,7 @@
 
 #include "parallelCombinedGraph.h"
 
+#include "csrGraph.h"
 #include "parallelSOSPUpdate.h"
 #include "read.h"
 #include "stageTimer.h"
@@ -58,6 +60,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -105,6 +108,87 @@ bool readParent(const string &path, vector<int> &parent, int numberOfNodes) {
 
 } // namespace
 
+long long preferenceScale(const vector<int> &preferences, int K) {
+  if (preferences.empty()) {
+    return 1;
+  }
+  if (static_cast<int>(preferences.size()) != K) {
+    return 0;
+  }
+  long long scale = 1;
+  for (int pref : preferences) {
+    if (pref < 1) {
+      return 0;
+    }
+    scale = scale / gcd(scale, static_cast<long long>(pref)) * pref;
+    if (scale > (1LL << 20)) {
+      return 0;
+    }
+  }
+  return scale;
+}
+
+long long combinedEdgeWeight(unsigned int treeMask,
+                             const vector<int> &preferences, int K,
+                             long long scale) {
+  long long weight = scale * (K + 1);
+  for (int i = 0; i < K; ++i) {
+    if (treeMask & (1u << i)) {
+      weight -= preferences.empty() ? scale : scale / preferences[i];
+    }
+  }
+  return weight;
+}
+
+bool mospPathCosts(const CsrGraph &graph, const vector<int> &parent,
+                   int source, vector<long long> &costs) {
+  const int n = graph.numberOfNodes;
+  const int K = graph.numberOfObjectives;
+  costs.assign(static_cast<size_t>(n) * K, DISTANCE_INF);
+  // Children lists of the tree, then a traversal from the source.
+  vector<int> childStart(n + 1, 0), children(n);
+  for (int v = 0; v < n; ++v) {
+    if (v != source && parent[v] >= 0) {
+      ++childStart[parent[v] + 1];
+    }
+  }
+  for (int v = 0; v < n; ++v) {
+    childStart[v + 1] += childStart[v];
+  }
+  vector<int> cursor(childStart.begin(), childStart.end() - 1);
+  for (int v = 0; v < n; ++v) {
+    if (v != source && parent[v] >= 0) {
+      children[cursor[parent[v]]++] = v;
+    }
+  }
+  for (int k = 0; k < K; ++k) {
+    costs[static_cast<size_t>(source) * K + k] = 0;
+  }
+  vector<int> queue{source};
+  for (size_t i = 0; i < queue.size(); ++i) {
+    int p = queue[i];
+    for (int c = childStart[p]; c < childStart[p + 1]; ++c) {
+      int v = children[c];
+      int edge = -1;
+      for (int e = graph.rowPtr[p]; e < graph.rowPtr[p + 1]; ++e) {
+        if (graph.colInd[e] == v) {
+          edge = e;
+          break;
+        }
+      }
+      if (edge < 0) {
+        return false;
+      }
+      for (int k = 0; k < K; ++k) {
+        costs[static_cast<size_t>(v) * K + k] =
+            costs[static_cast<size_t>(p) * K + k] + graph.weight(edge, k);
+      }
+      queue.push_back(v);
+    }
+  }
+  return true;
+}
+
 /**
  * @brief Build a combined graph from K SSSP trees and find its SSSP.
  *
@@ -114,11 +198,22 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
                            const vector<string> &treeInputPaths, int K,
                            int source, const string &workDir,
                            const string &distancesOutputPath,
-                           const string &treeOutputPath) {
+                           const string &treeOutputPath,
+                           const vector<int> &preferences) {
 
   if (K <= 0 || static_cast<int>(treeInputPaths.size()) < K) {
     cout << "Error: K=" << K << " but only " << treeInputPaths.size()
          << " tree paths supplied.\n";
+    return false;
+  }
+
+  if (K > 32) {
+    cout << "Error: at most 32 objectives are supported.\n";
+    return false;
+  }
+  const long long scale = preferenceScale(preferences, K);
+  if (scale == 0) {
+    cout << "Error: invalid preference vector (need K values >= 1).\n";
     return false;
   }
 
@@ -170,12 +265,12 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
 
   // Outer loop over K trees is only size 3 (or small K) — parallelize the
   // inner loop over vertices instead.
-  map<pair<int, int>, int>
-      edgeMembership; // edge → count of trees it appears in
+  map<pair<int, int>, unsigned int>
+      edgeMembership; // edge → bit mask of the trees it appears in
 
 #pragma omp parallel
   {
-    map<pair<int, int>, int> localMap;
+    map<pair<int, int>, unsigned int> localMap;
 
     for (int k = 0; k < K; ++k) {
       const vector<int> &par = parents[k];
@@ -188,14 +283,14 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
         if (u < 0 || u >= numberOfNodes)
           continue; // unreachable vertex or invalid parent
 
-        localMap[{u, v}] += 1;
+        localMap[{u, v}] |= 1u << k;
       }
     }
 
 #pragma omp critical
     {
       for (const auto &kv : localMap) {
-        edgeMembership[kv.first] += kv.second;
+        edgeMembership[kv.first] |= kv.second;
       }
     }
   }
@@ -299,7 +394,8 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
   // --- 2d. Write combined-graph edges as insertion file ---
   //
   // Format expected by parallelSOSPUpdate: "u v w1" (1 objective weight).
-  // Weight = K + 1 - membershipCount  (so all-3 → 1, two → 2, one → 3).
+  // Weight = L * (K + 1) - sum over the trees containing the edge of
+  // L / Pref_i; with Pref = 1s: K + 1 - membershipCount (all-3 → 1, ...).
 
   const string insertPath = workDir + "/insert.txt";
   {
@@ -311,13 +407,7 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
     for (const auto &entry : edgeMembership) {
       int u = entry.first.first;
       int v = entry.first.second;
-      int m = entry.second;
-      // Clamp m to [1, K] defensively (shouldn't be needed, just in case)
-      if (m < 1)
-        m = 1;
-      if (m > K)
-        m = K;
-      int w = K + 1 - m; // weight: 1 (best) to K (worst)
+      long long w = combinedEdgeWeight(entry.second, preferences, K, scale);
       insertFile << u << " " << v << " " << w << "\n";
     }
   }
