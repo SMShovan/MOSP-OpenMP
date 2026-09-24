@@ -7,7 +7,8 @@
  *   mtx2csr <in.mtx> <outPrefix> <K> <wmin> <wmax> <seed>
  *       SuiteSparse Matrix Market file -> CSR text. Symmetric matrices get
  *       both edge directions; self-loops and duplicate edges are dropped;
- *       every edge gets K uniform random weights in [wmin, wmax].
+ *       every edge gets K uniform random weights in [wmin, wmax]
+ *       (1 <= wmin <= wmax <= 2^31-1, 1 <= K <= 32).
  *
  *   widen <inPrefix> <outPrefix> <K> <wmin> <wmax> <seed>
  *       Copy a graph and append random objectives until it has K (the
@@ -37,7 +38,9 @@
 #include "dijkstra.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -51,6 +54,29 @@
 using namespace std;
 
 namespace {
+
+/// Parse a decimal integer argument in [lo, hi]; prints an error if not.
+bool parseIntArg(const char *text, const char *name, long long lo,
+                 long long hi, int &value) {
+  char *end = nullptr;
+  errno = 0;
+  const long long parsed = strtoll(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || parsed < lo ||
+      parsed > hi) {
+    cerr << "Error: " << name << " must be an integer in [" << lo << ", "
+         << hi << "], got '" << text << "'.\n";
+    return false;
+  }
+  value = static_cast<int>(parsed);
+  return true;
+}
+
+/// K in [1, 32] and weights 1 <= wmin <= wmax <= 2^31-1.
+bool parseWeightArgs(char **argv, int &K, int &wmin, int &wmax) {
+  return parseIntArg(argv[0], "K", 1, 32, K) &&
+         parseIntArg(argv[1], "wmin", 1, INT_MAX, wmin) &&
+         parseIntArg(argv[2], "wmax", wmin, INT_MAX, wmax);
+}
 
 double msSince(chrono::steady_clock::time_point start) {
   return chrono::duration<double, milli>(chrono::steady_clock::now() - start)
@@ -198,9 +224,13 @@ bool parseChangeOptions(int argc, char **argv, int first,
     } else if (a == "--source") {
       opt.source = atoi(v.c_str());
     } else if (a == "--wmin") {
-      opt.weightMin = atoi(v.c_str());
+      if (!parseIntArg(v.c_str(), "--wmin", 1, INT_MAX, opt.weightMin)) {
+        return false;
+      }
     } else if (a == "--wmax") {
-      opt.weightMax = atoi(v.c_str());
+      if (!parseIntArg(v.c_str(), "--wmax", 1, INT_MAX, opt.weightMax)) {
+        return false;
+      }
     } else {
       return false;
     }
@@ -244,11 +274,18 @@ int main(int argc, char **argv) {
   auto start = chrono::steady_clock::now();
   int rc = 0;
 
+  int K = 0, wmin = 0, wmax = 0;
   if (command == "mtx2csr" && argc == 8) {
-    rc = mtxToCsr(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]),
-                  atoi(argv[6]), static_cast<unsigned>(atoll(argv[7])));
+    if (!parseWeightArgs(argv + 4, K, wmin, wmax)) {
+      return 2;
+    }
+    rc = mtxToCsr(argv[2], argv[3], K, wmin, wmax,
+                  static_cast<unsigned>(atoll(argv[7])));
   } else if (command == "widen" && argc == 8) {
-    rc = widen(argv[2], argv[3], atoi(argv[4]), atoi(argv[5]), atoi(argv[6]),
+    if (!parseWeightArgs(argv + 4, K, wmin, wmax)) {
+      return 2;
+    }
+    rc = widen(argv[2], argv[3], K, wmin, wmax,
                static_cast<unsigned>(atoll(argv[7])));
   } else if (command == "cache" && argc == 4) {
     CsrGraph graph;

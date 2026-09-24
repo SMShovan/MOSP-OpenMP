@@ -11,6 +11,7 @@
 #include "dijkstra.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -307,9 +308,13 @@ bool generateChangeBatch(const CsrGraph &graph,
     batch.insertFrom.push_back(u);
     batch.insertTo.push_back(v);
     for (int k = 0; k < K; ++k) {
+      // Increases saturate at the largest valid weight (2^31-1).
       int w = mode == ChangeMode::Increase
-                  ? graph.weight(e, k) +
-                        uniform_int_distribution<int>(1, options.weightMax)(rng)
+                  ? static_cast<int>(min<long long>(
+                        INT_MAX,
+                        static_cast<long long>(graph.weight(e, k)) +
+                            uniform_int_distribution<int>(
+                                1, options.weightMax)(rng)))
                   : weightDist(rng);
       batch.insertWeights.push_back(w);
     }

@@ -50,7 +50,14 @@ struct ChangeBatch {
   int numberOfDeletes() const { return static_cast<int>(deleteFrom.size()); }
 };
 
-/** @brief Read <prefix>RowPtr.txt, <prefix>ColInd.txt and <prefix>Values.txt. */
+/**
+ * @brief Read <prefix>RowPtr.txt, <prefix>ColInd.txt and <prefix>Values.txt.
+ *
+ * @details
+ * Rejects (with an error message) row pointers that are not a monotone
+ * sequence in [0, 2^31-1] starting at 0, column indices outside [0, n),
+ * and weights outside [1, 2^31-1] (the update needs positive weights).
+ */
 bool readCsrGraph(const std::string &prefix, CsrGraph &graph);
 
 /** @brief Write a graph in the same three-file text format. */
@@ -76,6 +83,8 @@ bool loadCsrGraph(const std::string &prefix, CsrGraph &graph,
 /**
  * @brief Read insert.txt ("u v w1 .. wK") and delete.txt ("u v").
  *
+ * @details Endpoints must be in [0, n) and weights in [1, 2^31-1].
+ *
  * @param numberOfObjectives Weights expected per insertion.
  * @param numberOfNodes      Vertex count used to validate endpoints.
  */
@@ -100,11 +109,19 @@ bool applyChangeBatch(const CsrGraph &original, ChangeBatch &batch,
 /** @brief Build the reverse graph: row v lists u for every edge u -> v. */
 void transposeCsrGraph(const CsrGraph &graph, CsrGraph &reverse);
 
-/** @brief Read a distance file ("v d" or "v INF" per line). */
+/**
+ * @brief Read a distance file ("v d" or "v INF" per line).
+ *
+ * @details Every vertex must appear exactly once, with d >= 0.
+ */
 bool readDistances(const std::string &path, int numberOfNodes,
                    std::vector<long long> &distances);
 
-/** @brief Read a parent file ("v p" per line, p = -1 for none). */
+/**
+ * @brief Read a parent file ("v p" per line, p = -1 for none).
+ *
+ * @details Every vertex must appear exactly once.
+ */
 bool readParents(const std::string &path, int numberOfNodes,
                  std::vector<int> &parent);
 

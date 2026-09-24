@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -155,8 +156,11 @@ private:
   const char *end_;
 };
 
-/// Parse a file of whitespace-separated integers.
-bool readIntFile(const string &path, vector<int> &values) {
+/// Parse a file of whitespace-separated non-negative 32-bit integers.
+/// Values outside [0, INT_MAX] set @p outOfRange and fail (instead of
+/// wrapping to another value when narrowed to int).
+bool readIntFile(const string &path, vector<int> &values, bool &outOfRange) {
+  outOfRange = false;
   string text;
   if (!readWholeFile(path, text)) {
     return false;
@@ -167,6 +171,10 @@ bool readIntFile(const string &path, vector<int> &values) {
   scanner.skipWhitespace();
   while (!scanner.atEnd()) {
     if (!scanner.readInt(value)) {
+      return false;
+    }
+    if (value < 0 || value > INT_MAX) {
+      outOfRange = true;
       return false;
     }
     values.push_back(static_cast<int>(value));
@@ -192,6 +200,13 @@ constexpr char kBinaryMagic[8] = {'M', 'O', 'S', 'P', 'C', 'S', 'R', '1'};
 
 namespace {
 
+/// Edge weights are positive 32-bit integers: zero weights can make two
+/// equal-distance vertices each other's lowest-id parent (a parent cycle),
+/// and negative weights break the monotone update.
+bool validWeight(long long w) { return w >= 1 && w <= INT_MAX; }
+constexpr const char *kWeightRangeError =
+    "weights must be integers in [1, 2^31-1].";
+
 /// Parse a Values file: one line per edge with K weights (K inferred).
 bool readValuesFile(const string &path, vector<int> &weights, int &objectives,
                     long long &lines, string &error) {
@@ -212,6 +227,10 @@ bool readValuesFile(const string &path, vector<int> &weights, int &objectives,
     while (!scanner.atEnd() && !scanner.atNewline()) {
       if (!scanner.readInt(value)) {
         error = "Invalid token in CSR values file.";
+        return false;
+      }
+      if (!validWeight(value)) {
+        error = kWeightRangeError;
         return false;
       }
       weights.push_back(static_cast<int>(value));
@@ -265,18 +284,33 @@ bool readCsrGraph(const string &prefix, CsrGraph &graph) {
   graph = CsrGraph();
   // The three files are independent: parse them concurrently.
   bool rowsOk = false, colsOk = false, valuesOk = false;
+  bool rowsRange = false, colsRange = false;
   int objectives = 0;
   long long lines = 0;
   string valuesError;
   runConcurrently({
-      [&] { return rowsOk = readIntFile(prefix + "RowPtr.txt", graph.rowPtr); },
-      [&] { return colsOk = readIntFile(prefix + "ColInd.txt", graph.colInd); },
+      [&] {
+        return rowsOk = readIntFile(prefix + "RowPtr.txt", graph.rowPtr,
+                                    rowsRange);
+      },
+      [&] {
+        return colsOk = readIntFile(prefix + "ColInd.txt", graph.colInd,
+                                    colsRange);
+      },
       [&] {
         return valuesOk = readValuesFile(prefix + "Values.txt", graph.weights,
                                          objectives, lines, valuesError);
       },
   });
 
+  if (rowsRange) {
+    cout << "Error: CSR row pointer out of range [0, 2^31-1].\n";
+    return false;
+  }
+  if (colsRange) {
+    cout << "Error: CSR column index out of range.\n";
+    return false;
+  }
   if (!rowsOk || graph.rowPtr.size() < 2) {
     cout << "Error: Could not read CSR row pointers: " << prefix
          << "RowPtr.txt\n";
@@ -458,6 +492,13 @@ bool readChangeBatch(const string &insertPath, const string &deletePath,
         if (!inRange(tokens[0]) || !inRange(tokens[1])) {
           cout << "Error: Inserted edge endpoint out of range.\n";
           return false;
+        }
+        for (int k = 0; k < numberOfObjectives; ++k) {
+          if (!validWeight(tokens[2 + k])) {
+            cout << "Error: Invalid insert line: " << kWeightRangeError
+                 << "\n";
+            return false;
+          }
         }
         batch.insertFrom.push_back(static_cast<int>(tokens[0]));
         batch.insertTo.push_back(static_cast<int>(tokens[1]));
@@ -720,6 +761,8 @@ bool readDistances(const string &path, int numberOfNodes,
     return false;
   }
   distances.assign(numberOfNodes, DISTANCE_INF);
+  vector<char> seen(numberOfNodes, 0);
+  int count = 0;
   TextScanner scanner(text);
   while (true) {
     scanner.skipWhitespace();
@@ -743,7 +786,23 @@ bool readDistances(const string &path, int numberOfNodes,
       cout << "Error: Vertex ID out of range in distances file.\n";
       return false;
     }
+    if (value < 0) {
+      cout << "Error: Negative distance in distances file: " << path << "\n";
+      return false;
+    }
+    if (seen[vertex]) {
+      cout << "Error: Vertex " << vertex
+           << " listed twice in distances file: " << path << "\n";
+      return false;
+    }
+    seen[vertex] = 1;
+    ++count;
     distances[vertex] = value;
+  }
+  if (count != numberOfNodes) {
+    cout << "Error: distances file lists " << count << " of " << numberOfNodes
+         << " vertices: " << path << "\n";
+    return false;
   }
   return true;
 }
@@ -755,6 +814,8 @@ bool readParents(const string &path, int numberOfNodes, vector<int> &parent) {
     return false;
   }
   parent.assign(numberOfNodes, -1);
+  vector<char> seen(numberOfNodes, 0);
+  int count = 0;
   TextScanner scanner(text);
   while (true) {
     scanner.skipWhitespace();
@@ -776,7 +837,19 @@ bool readParents(const string &path, int numberOfNodes, vector<int> &parent) {
       cout << "Error: Vertex ID out of range in SSSP tree file.\n";
       return false;
     }
+    if (seen[vertex]) {
+      cout << "Error: Vertex " << vertex
+           << " listed twice in SSSP tree file: " << path << "\n";
+      return false;
+    }
+    seen[vertex] = 1;
+    ++count;
     parent[vertex] = static_cast<int>(value);
+  }
+  if (count != numberOfNodes) {
+    cout << "Error: SSSP tree file lists " << count << " of " << numberOfNodes
+         << " vertices: " << path << "\n";
+    return false;
   }
   return true;
 }

@@ -22,8 +22,9 @@ struct ChangeBatch;
  *             new random weights in [weightMin, weightMax] (written as an
  *             insertion of an existing edge; increases and decreases).
  * - Increase: every change raises all weights of a distinct SOSP-tree edge
- *             by a random amount in [1, weightMax] (tree-edge weight
- *             increases, which invalidate subtrees like deletions do).
+ *             by a random amount in [1, weightMax], capped at 2^31-1
+ *             (tree-edge weight increases, which invalidate subtrees like
+ *             deletions do).
  */
 enum class ChangeMode { Uniform, Targeted, Reweight, Increase };
 
