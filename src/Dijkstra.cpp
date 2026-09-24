@@ -42,7 +42,10 @@ bool runDijkstra(
         return false;
     }
 
-    if (objectiveNumber < 0 || objectiveNumber >= numberOfObjectives) {
+    // A graph without edges has no weights (the objective count cannot be
+    // inferred from an empty values file), so any objective index is fine.
+    if (objectiveNumber < 0 ||
+        (numberOfObjectives > 0 && objectiveNumber >= numberOfObjectives)) {
         cout << "Error: objectiveNumber out of range.\n";
         return false;
     }
@@ -145,7 +148,10 @@ bool runDijkstraCSR(
         return false;
     }
 
-    if (objectiveNumber < 0 || objectiveNumber >= numberOfObjectives) {
+    // A graph without edges has no weights (the objective count cannot be
+    // inferred from an empty values file), so any objective index is fine.
+    if (objectiveNumber < 0 ||
+        (numberOfObjectives > 0 && objectiveNumber >= numberOfObjectives)) {
         cout << "Error: objectiveNumber out of range.\n";
         return false;
     }

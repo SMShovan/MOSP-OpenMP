@@ -120,7 +120,12 @@ int main(int argc, char **argv) {
                                   expectedDir + "/SSSPTreeParallelUpdate.txt");
 
     if (!ok) {
-      cout << "Run " << run << ": ERROR (pipeline failure)\n";
+      cout << "Run " << run << ": ERROR (pipeline failure: nodes="
+       << numberOfNodes << " edges=" << numberOfEdges
+       << " objs=" << numberOfObjectives << " objIdx=" << objectiveIndex
+       << " changes=" << numberOfChangedEdges << " ins%=" << insertPct
+       << " graphSeed=" << graphSeed << " changeSeed=" << changeSeed
+       << ")\n";
       ++failCount;
       continue;
     }
