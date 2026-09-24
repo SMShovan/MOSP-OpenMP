@@ -8,20 +8,25 @@
  * updated graph.
  *
  * ============================================================================
- * PARALLELIZATION STRATEGY
+ * ALGORITHM AND PARALLELIZATION
  * ============================================================================
  *
- * Phases 0 and 1 (preparation + initial edge processing) remain sequential
- * because they are I/O-dominated and operate on tiny batches.
+ * Phase 0 (reading the inputs, applying the batch to the adjacency lists)
+ * is sequential.
  *
- * Phase 2 (iterative propagation) is parallelized:
- *   - Step 2a (collect candidates): parallel for with thread-local vectors
- *     and atomic compare-exchange for deduplication.
- *   - Step 2b (update distances):  parallel for with per-candidate
- *     findBestParent; thread-local affected lists and atomic flags.
+ * Phase 1 (OpenMP): the head v of every deleted or weight-increased edge
+ * (u,v) with parent[v] == u is a root; the SOSP subtree of every root is
+ * invalidated (distance INF, parent -1) — each vertex walks up its parent
+ * chain to the first vertex with a known state and writes that state along
+ * the path. The invalidated vertices and the heads of inserted edges then
+ * pull the best (distance, parent id) pair over their in-neighbours.
  *
- * Post-processing BFS (reachability check) uses level-synchronous parallel
- * BFS with atomic visited flags.
+ * Phase 2 (OpenMP): the thesis' propagation loop — collect the
+ * out-neighbours of the affected vertices, re-evaluate each candidate —
+ * with a monotone update (a vertex only takes a strictly better pair).
+ * Distances only decrease, so the loop needs no iteration cap, cannot
+ * "count to infinity" through a stale cycle, and vertices cut off from the
+ * source keep INF without a reachability post-pass.
  *
  * Race Condition Analysis:
  *   - isCandidate[]/isAffected[]: atomic compare-exchange on char arrays
@@ -29,8 +34,10 @@
  *   - distances[v]/parent[v] writes in Step 2b: no race because each
  *     candidate v appears exactly once (deduplicated)
  *   - distances[u] reads in findBestParent: benign race under Chaotic
- *     Bellman-Ford semantics — convergence guaranteed, same final result
- *   - reachable[] in BFS: atomic compare-exchange
+ *     Bellman-Ford semantics — any change marks u affected, so v is
+ *     re-evaluated in the next iteration
+ *   - invalidation states: relaxed atomic char loads/stores; concurrent
+ *     walks over a shared path write the same state
  *
  * ============================================================================
  */
@@ -382,116 +389,158 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   applyStage.stop();
 
   // ========================================================================
-  // PHASE 1: PROCESS CHANGED EDGES (Sequential — tiny batch, order-dependent)
+  // PHASE 1: PROCESS CHANGED EDGES (Parallel — OpenMP)
   // ========================================================================
+  // 1a. Roots: the head v of every deleted or weight-increased edge (u,v)
+  //     with parent[v] == u.
+  // 1b. Invalidate the SOSP subtree of every root (distance INF, parent -1).
+  //     Every vertex walks up its parent chain until it meets a vertex whose
+  //     state is known (a root: invalid; the tree root: valid) and writes
+  //     that state along the path, so each vertex is resolved about once.
+  //     Concurrent walks over a shared path write the same state.
+  // 1c. The invalidated vertices and the heads of all inserted edges are
+  //     re-evaluated over their in-neighbours (monotone: a vertex only takes
+  //     a strictly better (distance, parent id) pair).
   ScopedStage step1Stage("sosp/1_process_changes_compute");
 
-  // Use char arrays instead of bool vectors for atomic compare-exchange
-  vector<char> isAffected(numberOfNodes, 0);
-  vector<int> affectedVertices;
+  // State per vertex: 0 unknown, 1 valid, 2 invalid (in a root's subtree).
+  vector<char> state(numberOfNodes, 0);
+  auto loadState = [&](int v) {
+    return __atomic_load_n(&state[v], __ATOMIC_RELAXED);
+  };
+  auto storeState = [&](int v, char s) {
+    __atomic_store_n(&state[v], s, __ATOMIC_RELAXED);
+  };
+  auto markRoot = [&](int u, int v) {
+    if (parent[v] == u) {
+      storeState(v, 2);
+    }
+  };
+  const int numDeleted = static_cast<int>(deletedEdges.size());
+  const int numIncreased = static_cast<int>(weightIncreases.size());
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < numDeleted; ++i) {
+    markRoot(deletedEdges[i].from, deletedEdges[i].to);
+  }
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < numIncreased; ++i) {
+    markRoot(weightIncreases[i].from, weightIncreases[i].to);
+  }
 
-  // --- 1a. Process insertions ---
+  vector<char> isInitialCandidate(numberOfNodes, 0);
+  vector<int> candidateVertices;
+  if (numDeleted + numIncreased > 0) {
+#pragma omp parallel
+    {
+      vector<int> localInvalid;
+#pragma omp for schedule(dynamic, 1024)
+      for (int v = 0; v < numberOfNodes; ++v) {
+        if (loadState(v) != 0) {
+          continue;
+        }
+        int u = v;
+        while (loadState(u) == 0 && parent[u] >= 0) {
+          u = parent[u];
+        }
+        char s = loadState(u) == 0 ? 1 : loadState(u); // tree root: valid
+        for (u = v; u >= 0 && loadState(u) == 0; u = parent[u]) {
+          storeState(u, s);
+        }
+      }
+      // Every vertex is resolved now (the implicit barrier above).
+#pragma omp for schedule(static)
+      for (int v = 0; v < numberOfNodes; ++v) {
+        if (state[v] == 2) {
+          distances[v] = INF_VALUE;
+          parent[v] = -1;
+          isInitialCandidate[v] = 1;
+          localInvalid.push_back(v);
+        }
+      }
+#pragma omp critical
+      candidateVertices.insert(candidateVertices.end(), localInvalid.begin(),
+                               localInvalid.end());
+    }
+  }
+  recordCounter("sosp/invalidated", candidateVertices.size());
   for (const auto &edge : insertedEdges) {
-    int u = edge.from;
     int v = edge.to;
-
-    if (distances[u] >= INF_VALUE / 2) {
-      continue;
-    }
-
-    long long actualWeight = -1;
-    for (const auto &neighbor : outAdjacency[u]) {
-      if (neighbor.vertex == v) {
-        actualWeight = neighbor.weight;
-        break;
-      }
-    }
-    if (actualWeight < 0) {
-      continue;
-    }
-
-    long long newDistance = distances[u] + actualWeight;
-    if (newDistance < distances[v]) {
-      distances[v] = newDistance;
-      parent[v] = u;
-      if (!isAffected[v]) {
-        isAffected[v] = 1;
-        affectedVertices.push_back(v);
-      }
-    } else if (newDistance == distances[v] && v != source && u < parent[v]) {
-      parent[v] = u; // equal distance: the lowest parent id wins
+    if (v != source && !isInitialCandidate[v]) {
+      isInitialCandidate[v] = 1;
+      candidateVertices.push_back(v);
     }
   }
 
-  // --- 1b. Process deletions ---
-  for (const auto &edge : deletedEdges) {
-    int u = edge.from;
-    int v = edge.to;
-
-    if (parent[v] != u) {
-      continue;
-    }
-
-    int bestAlternativeParent = -1;
-    long long bestAlternativeDistance = INF_VALUE;
-    findBestParent(v, inAdjacency, distances, INF_VALUE, bestAlternativeParent,
-                   bestAlternativeDistance);
-
-    parent[v] = bestAlternativeParent;
-    distances[v] = bestAlternativeDistance;
-
-    if (!isAffected[v]) {
-      isAffected[v] = 1;
-      affectedVertices.push_back(v);
-    }
-  }
-
-  // --- 1c. Process weight increases on existing edges ---
-  for (const auto &wi : weightIncreases) {
-    int u = wi.from;
-    int v = wi.to;
-
-    if (parent[v] != u) {
-      continue;
-    }
-
+  // Re-evaluate candidate v; returns true if its distance decreased.
+  auto relax = [&](int v) {
     int bestNewParent = -1;
     long long bestNewDistance = INF_VALUE;
     findBestParent(v, inAdjacency, distances, INF_VALUE, bestNewParent,
                    bestNewDistance);
-
-    parent[v] = bestNewParent;
-    distances[v] = bestNewDistance;
-
-    if (!isAffected[v]) {
-      isAffected[v] = 1;
-      affectedVertices.push_back(v);
+    long long current = distances[v];
+    bool better = bestNewDistance < current ||
+                  (bestNewDistance == current && bestNewParent >= 0 &&
+                   bestNewParent < parent[v]);
+    if (!better) {
+      return false;
     }
-  }
+    distances[v] = bestNewDistance;
+    parent[v] = bestNewParent;
+    return bestNewDistance < current;
+  };
 
-  step1Stage.stop();
-  recordCounter("sosp/initial_affected", affectedVertices.size());
+  // Use char arrays instead of bool vectors for atomic compare-exchange
+  vector<char> isAffected(numberOfNodes, 0);
+  vector<int> affectedVertices;
+  const int numCandidates0 = static_cast<int>(candidateVertices.size());
+#pragma omp parallel
+  {
+    vector<int> localAffected;
+#pragma omp for schedule(dynamic, 64)
+    for (int i = 0; i < numCandidates0; ++i) {
+      int v = candidateVertices[i];
+      if (relax(v)) {
+        char expected = 0;
+        if (__atomic_compare_exchange_n(&isAffected[v], &expected,
+                                        static_cast<char>(1), false,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+          localAffected.push_back(v);
+        }
+      }
+    }
+#pragma omp critical
+    affectedVertices.insert(affectedVertices.end(), localAffected.begin(),
+                            localAffected.end());
+  }
 
   // ========================================================================
   // PHASE 2: PROPAGATE THE UPDATE (Parallel — OpenMP)
   // ========================================================================
-  ScopedStage propagateStage("sosp/2_propagate_compute");
   // Iteratively propagate changes through the graph until convergence.
   // Uses Chaotic Bellman-Ford semantics: concurrent reads of distances[]
   // during findBestParent are benign races that do not affect final
-  // correctness — convergence to the global shortest-path optimum is
-  // guaranteed.
+  // correctness. The update is monotone (distances only decrease), so the
+  // loop terminates without an iteration cap and vertices cut off from the
+  // source keep the INF they got in Phase 1 (no reachability post-pass).
+  step1Stage.stop();
+  recordCounter("sosp/initial_affected", affectedVertices.size());
+  ScopedStage propagateStage("sosp/2_propagate_compute");
 
   int iterationCount = 0;
-  const int maxIterations = numberOfNodes;
 
-  while (!affectedVertices.empty() && iterationCount < maxIterations) {
+  while (!affectedVertices.empty()) {
     ++iterationCount;
+    if (iterationCount > numberOfNodes) {
+      // Every sweep settles at least one more hop of every shortest path,
+      // so this cannot happen.
+      cout << "Error: SOSP update did not converge.\n";
+      return false;
+    }
 
     // --- 2a. Identify candidate vertices (out-neighbors of affected) ---
     // Use char array for atomic compare-exchange deduplication.
     vector<char> isCandidate(numberOfNodes, 0);
-    vector<int> candidateVertices;
+    candidateVertices.clear();
 
     int numAffected = static_cast<int>(affectedVertices.size());
 
@@ -534,7 +583,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
 
     affectedVertices.clear();
 
-    // --- 2b. Update distances of candidate vertices ---
+    // --- 2b. Update distances of candidate vertices (monotone) ---
     // Each candidate v is unique (deduplicated above), so writes to
     // distances[v] and parent[v] are race-free. Reads of distances[u]
     // in findBestParent may see stale values — this is the Chaotic
@@ -548,21 +597,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
 #pragma omp for schedule(dynamic, 64)
       for (int i = 0; i < numCandidates; ++i) {
         int candidateVertex = candidateVertices[i];
-
-        int bestNewParent = -1;
-        long long bestNewDistance = INF_VALUE;
-        findBestParent(candidateVertex, inAdjacency, distances, INF_VALUE,
-                       bestNewParent, bestNewDistance);
-
-        // ALWAYS update parent to current best (parent consistency fix).
-        // Only propagate further if the DISTANCE actually changed.
-        bool distanceChanged = (bestNewDistance != distances[candidateVertex]);
-
-        // No race: each candidateVertex is unique in the list
-        parent[candidateVertex] = bestNewParent;
-        distances[candidateVertex] = bestNewDistance;
-
-        if (distanceChanged) {
+        if (relax(candidateVertex)) {
           // Atomic test-and-set for deduplication in affected list
           char expected = 0;
           if (__atomic_compare_exchange_n(
@@ -584,71 +619,6 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
 
   propagateStage.stop();
   recordCounter("sosp/iterations", iterationCount);
-
-  if (iterationCount >= maxIterations && !affectedVertices.empty()) {
-    cout << "Warning: SOSP update reached maximum iteration limit ("
-         << maxIterations << "). Running reachability check.\n";
-  }
-
-  // ========================================================================
-  // POST-PROCESSING: REACHABILITY CHECK (Parallel BFS)
-  // ========================================================================
-  ScopedStage bfsStage("sosp/3_bfs_reachability_compute");
-  // Level-synchronous parallel BFS from the source vertex.
-  // Uses atomic compare-exchange on a char array for visited flags.
-
-  {
-    vector<char> reachable(numberOfNodes, 0);
-    reachable[source] = 1;
-
-    vector<int> frontier;
-    frontier.push_back(source);
-
-    while (!frontier.empty()) {
-      int frontierSize = static_cast<int>(frontier.size());
-      vector<int> nextFrontier;
-
-#pragma omp parallel
-      {
-        vector<int> localNext;
-
-#pragma omp for schedule(dynamic, 64)
-        for (int i = 0; i < frontierSize; ++i) {
-          int current = frontier[i];
-          for (const auto &neighbor : outAdjacency[current]) {
-            // Atomic test-and-set: only the thread that flips
-            // 0→1 adds the vertex to the next frontier.
-            char expected = 0;
-            if (__atomic_compare_exchange_n(&reachable[neighbor.vertex],
-                                            &expected, static_cast<char>(1),
-                                            false, __ATOMIC_RELAXED,
-                                            __ATOMIC_RELAXED)) {
-              localNext.push_back(neighbor.vertex);
-            }
-          }
-        }
-
-#pragma omp critical
-        {
-          nextFrontier.insert(nextFrontier.end(), localNext.begin(),
-                              localNext.end());
-        }
-      }
-
-      frontier = move(nextFrontier);
-    }
-
-// Mark unreachable vertices (trivially parallel)
-#pragma omp parallel for schedule(static)
-    for (int v = 0; v < numberOfNodes; ++v) {
-      if (!reachable[v]) {
-        distances[v] = INF_VALUE;
-        parent[v] = -1;
-      }
-    }
-  }
-
-  bfsStage.stop();
 
   // ========================================================================
   // WRITE OUTPUT (Sequential — I/O)

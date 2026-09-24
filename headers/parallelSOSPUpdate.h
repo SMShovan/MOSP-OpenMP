@@ -12,10 +12,11 @@
  * Produces identical results to sequentialSOSPUpdate() (and thus matches
  * Dijkstra recalculation on the updated graph).
  *
- * Phases 0 and 1 (preparation + initial edge processing) are sequential.
- * Phase 2 (iterative propagation) and the post-processing BFS are
- * parallelized with OpenMP using thread-local vectors, atomic
- * compare-exchange for flag deduplication, and critical-section merging.
+ * Phase 0 (reading the inputs and applying the batch) is sequential.
+ * Phase 1 (roots from the change list, subtree invalidation, first pull
+ * pass) and Phase 2 (monotone propagation) are parallelized with OpenMP;
+ * see parallelSOSPUpdate.cpp. Vertices cut off from the source end with
+ * distance INF and parent -1.
  *
  * @param originalCsrPrefix  Prefix for original CSR files.
  * @param distancesInputPath Path to original distances file from Dijkstra.

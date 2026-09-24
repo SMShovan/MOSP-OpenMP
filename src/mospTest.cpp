@@ -516,6 +516,59 @@ void runThesisExample(unsigned int) {
   cout << "thesis-example: 1 case (3 trees, 2 preference vectors)\n";
 }
 
+/// Count-to-infinity regressions found by the stress tests of the original
+/// code: after a tree-edge deletion the head picks a descendant as its new
+/// parent and the stale cycle only counts up by its (small) weight per
+/// round, so the original loop hit maxIterations = n before the distances
+/// of reachable vertices were correct (the BFS post-pass only repairs
+/// unreachable vertices).
+void runRegressions(unsigned int) {
+  struct Case {
+    int n, m, K, objective, changes, insertPct, maxWeight;
+    unsigned int graphSeed, changeSeed;
+  };
+  const vector<Case> cases = {
+      {6, 10, 2, 0, 6, 55, 50, 621705, 250813},  // stress test, 1 in ~500
+      {13, 22, 3, 0, 6, 26, 50, 770968, 694580},
+      {9, 17, 2, 1, 6, 81, 50, 115080, 943676},
+  };
+  int index = 0;
+  for (const auto &c : cases) {
+    string base = g_work + "/regression_" + to_string(index++);
+    CsrGraph graph =
+        randomGraph(base, c.n, c.m, c.K, c.maxWeight, c.graphSeed);
+    generateChangedEdges(1, c.maxWeight, c.K, c.n, c.changes, c.insertPct,
+                         100 - c.insertPct, true, true, true, false,
+                         base + "/random/graphCsr", base + "/c/insert.txt",
+                         base + "/c/delete.txt", c.changeSeed);
+    ChangeBatch batch;
+    readChangeBatch(base + "/c/insert.txt", base + "/c/delete.txt", c.K, c.n,
+                    batch);
+    CaseFiles files = writeCase(base + "/case", graph, batch, 0);
+    CsrGraph updated, reverse;
+    applyChangeBatch(graph, batch, updated);
+    transposeCsrGraph(updated, reverse);
+    auto parallel = [](const CaseFiles &f, int k, int s, const string &d,
+                       const string &t) {
+      string obj = f.init + "/obj" + to_string(k);
+      return parallelSOSPUpdate(f.graph, obj + "/distances.txt",
+                                obj + "/tree.txt", f.insert, f.remove, k, s, d,
+                                t);
+    };
+    auto sequential = [](const CaseFiles &f, int k, int s, const string &d,
+                         const string &t) {
+      string obj = f.init + "/obj" + to_string(k);
+      return sequentialSOSPUpdate(f.graph, obj + "/distances.txt",
+                                  obj + "/tree.txt", f.insert, f.remove, k, s,
+                                  d, t);
+    };
+    runAndCheck("regression/parallel", parallel, files, updated, reverse, 0);
+    runAndCheck("regression/sequential", sequential, files, updated, reverse,
+                0);
+  }
+  cout << "regressions: " << cases.size() << " cases\n";
+}
+
 /// Uniform generator mode reproduces generateChangedEdges() exactly.
 void runGeneratorEquivalence(unsigned int seed) {
   int cases = 0;
@@ -617,6 +670,7 @@ int main(int argc, char **argv) {
     }
   };
   quiet(runThesisExample);
+  quiet(runRegressions);
   quiet(runGeneratorEquivalence);
   quiet(runApplyEquivalence);
   quiet(runSosp);
