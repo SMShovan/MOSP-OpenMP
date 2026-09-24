@@ -30,7 +30,8 @@
  *
  * Race Condition Analysis:
  *   - isCandidate[]/isAffected[]: atomic compare-exchange on char arrays
- *   - candidateVertices/affectedVertices: thread-local + critical merge
+ *   - candidateVertices/affectedVertices: thread-local lists merged at
+ *     prefix-sum offsets (ListGather)
  *   - distances[v]/parent[v] writes in Step 2b: no race because each
  *     candidate v appears exactly once (deduplicated)
  *   - distances[u] reads in findBestParent: benign race under Chaotic
@@ -213,6 +214,40 @@ void findBestParent(int vertex,
     }
   }
 }
+
+/**
+ * @brief Concatenate per-thread lists into a shared vector.
+ *
+ * Every thread of a parallel region calls gather() once with its local
+ * list; the lists are appended to @p out in thread order at offsets from a
+ * prefix sum over their sizes, so the copies run in parallel instead of
+ * being serialized in a critical section.
+ */
+class ListGather {
+public:
+  explicit ListGather(vector<int> &out)
+      : out_(out), base_(out.size()), offsets_(omp_get_max_threads() + 1, 0) {}
+
+  void gather(const vector<int> &local) {
+    const int thread = omp_get_thread_num();
+    offsets_[thread + 1] = local.size();
+#pragma omp barrier
+#pragma omp single
+    {
+      const int threads = omp_get_num_threads();
+      for (int i = 0; i < threads; ++i) {
+        offsets_[i + 1] += offsets_[i];
+      }
+      out_.resize(base_ + offsets_[threads]);
+    }
+    copy(local.begin(), local.end(), out_.begin() + base_ + offsets_[thread]);
+  }
+
+private:
+  vector<int> &out_;
+  size_t base_;
+  vector<size_t> offsets_;
+};
 
 } // namespace
 
@@ -430,6 +465,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   vector<char> isInitialCandidate(numberOfNodes, 0);
   vector<int> candidateVertices;
   if (numDeleted + numIncreased > 0) {
+    ListGather invalidGather(candidateVertices);
 #pragma omp parallel
     {
       vector<int> localInvalid;
@@ -457,9 +493,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
           localInvalid.push_back(v);
         }
       }
-#pragma omp critical
-      candidateVertices.insert(candidateVertices.end(), localInvalid.begin(),
-                               localInvalid.end());
+      invalidGather.gather(localInvalid);
     }
   }
   recordCounter("sosp/invalidated", candidateVertices.size());
@@ -493,6 +527,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   vector<char> isAffected(numberOfNodes, 0);
   vector<int> affectedVertices;
   const int numCandidates0 = static_cast<int>(candidateVertices.size());
+  ListGather firstAffected(affectedVertices);
 #pragma omp parallel
   {
     vector<int> localAffected;
@@ -508,9 +543,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
         }
       }
     }
-#pragma omp critical
-    affectedVertices.insert(affectedVertices.end(), localAffected.begin(),
-                            localAffected.end());
+    firstAffected.gather(localAffected);
   }
 
   // ========================================================================
@@ -527,6 +560,9 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   ScopedStage propagateStage("sosp/2_propagate_compute");
 
   int iterationCount = 0;
+  // Candidate flags are allocated once; after every iteration only the
+  // listed candidates are reset (O(candidates) instead of O(n)).
+  vector<char> isCandidate(numberOfNodes, 0);
 
   while (!affectedVertices.empty()) {
     ++iterationCount;
@@ -539,10 +575,10 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
 
     // --- 2a. Identify candidate vertices (out-neighbors of affected) ---
     // Use char array for atomic compare-exchange deduplication.
-    vector<char> isCandidate(numberOfNodes, 0);
     candidateVertices.clear();
 
     int numAffected = static_cast<int>(affectedVertices.size());
+    ListGather candidateGather(candidateVertices);
 
 #pragma omp parallel
     {
@@ -572,13 +608,8 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
         }
       }
 
-// Merge thread-local candidates into the shared vector
-#pragma omp critical
-      {
-        candidateVertices.insert(candidateVertices.end(),
-                                 localCandidates.begin(),
-                                 localCandidates.end());
-      }
+      // Merge thread-local candidates into the shared vector
+      candidateGather.gather(localCandidates);
     }
 
     affectedVertices.clear();
@@ -589,6 +620,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     // in findBestParent may see stale values — this is the Chaotic
     // Bellman-Ford benign race.
     int numCandidates = static_cast<int>(candidateVertices.size());
+    ListGather affectedGather(affectedVertices);
 
 #pragma omp parallel
     {
@@ -608,11 +640,13 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
         }
       }
 
-// Merge thread-local affected lists into the shared vector
-#pragma omp critical
-      {
-        affectedVertices.insert(affectedVertices.end(), localAffected.begin(),
-                                localAffected.end());
+      // Merge thread-local affected lists into the shared vector
+      affectedGather.gather(localAffected);
+
+      // Reset the flags of this iteration's candidates for the next one.
+#pragma omp for schedule(static)
+      for (int i = 0; i < numCandidates; ++i) {
+        isCandidate[candidateVertices[i]] = 0;
       }
     }
   }
