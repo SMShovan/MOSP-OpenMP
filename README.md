@@ -69,8 +69,10 @@ make test TEST_THREADS=16   # more OpenMP threads for the tests
   consistency, identical canonical parents, identical output of two runs)
   and a host reference of the combined graph (default and skewed Pref).
   Also: the worked example of the thesis (Ch. 4, "Finding a single MOSP"),
-  count-to-infinity regressions, the distance-only fallback for large
-  weights, generator and batch-application equivalence checks.
+  count-to-infinity regressions, a cyclic input tree, the distance-only
+  fallback for large weights (random weights, and equal weights whose
+  many ties exercise the lowest-id parent recovery), the boundary of the
+  packed format, generator and batch-application equivalence checks.
 
 ## Running on real graphs
 

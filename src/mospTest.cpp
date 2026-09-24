@@ -58,12 +58,12 @@ int g_failures = 0;
 // ============================================================================
 
 /// Road-like graph: a width x height grid, both directions, K weights in
-/// [1, maxWeight]; a fraction of the grid edges is dropped (both ways) so
-/// the graph has dead ends and long detours.
+/// [minWeight, maxWeight]; a fraction of the grid edges is dropped (both
+/// ways) so the graph has dead ends and long detours.
 CsrGraph gridGraph(int width, int height, int K, int maxWeight,
-                   double dropFraction, unsigned int seed) {
+                   double dropFraction, unsigned int seed, int minWeight = 1) {
   mt19937 rng(seed);
-  uniform_int_distribution<int> weight(1, maxWeight);
+  uniform_int_distribution<int> weight(minWeight, maxWeight);
   uniform_real_distribution<double> coin(0.0, 1.0);
   const int n = width * height;
   vector<vector<pair<int, vector<int>>>> rows(n);
@@ -609,6 +609,46 @@ void runRegressions(unsigned int) {
   cout << "regressions: " << cases.size() + 1 << " cases\n";
 }
 
+/// Distance-only fallback with many equal-distance parents: every weight
+/// is 2 * 10^9, so on the grid most vertices have two tight in-neighbours
+/// and the parent recovery must pick the lower id (a last-writer-wins
+/// recovery gives non-canonical parents).
+void runLargeWeightTies(unsigned int seed) {
+  const int W = 2000000000;
+  CsrGraph graph = gridGraph(320, 320, 2, W, 0.1, seed * 7u + 3u, W);
+  ChangeGeneratorOptions options;
+  options.numberOfChanges = 2000;
+  options.insertionPercentage = 50;
+  options.weightMin = W;
+  options.weightMax = W;
+  options.seed = seed + 3u;
+  ChangeBatch batch;
+  generateChangeBatch(graph, options, batch);
+  const string dir = g_work + "/large-weights-ties";
+  vector<long long> distances;
+  vector<int> parents;
+  for (int k = 0; k < 2; ++k) {
+    vector<long long> dist;
+    vector<int> parent;
+    dijkstraCsrGraph(graph, k, 0, dist, parent);
+    distances.insert(distances.end(), dist.begin(), dist.end());
+    parents.insert(parents.end(), parent.begin(), parent.end());
+  }
+  ChangeBatch copy = batch;
+  CsrGraph updated;
+  MospResult result;
+  if (!mospUpdate(graph, copy, distances, parents, MospOptions(), updated,
+                  result)) {
+    report("large-weights", false, dir + ": mospUpdate failed");
+    return;
+  }
+  for (int k = 0; k < 2; ++k) {
+    report("large-weights", !result.objectiveStats[k].packedParents,
+           dir + ": expected the distance-only fallback");
+  }
+  checkPipeline(dir, graph, batch, 0, {});
+}
+
 /// Packing boundary: on the path 0 -> 1 -> ... -> n-1 with n = 2^16 + 1 and
 /// every weight 2^31-1, (n - 1) * maxWeight still fits next to the 17
 /// parent-id bits, but a candidate relaxed from the farthest vertex,
@@ -694,10 +734,11 @@ void runLargeWeights(unsigned int seed) {
                 source);
     ++cases;
   }
+  runLargeWeightTies(seed);
   runPackingBoundary();
-  ++cases;
+  cases += 2;
   cout << "large-weights: " << cases
-       << " cases (distance-only fallback, packing boundary)\n";
+       << " cases (distance-only fallback, ties, packing boundary)\n";
 }
 
 /// Uniform generator mode reproduces generateChangedEdges() exactly.
