@@ -15,7 +15,8 @@ APP      := $(BINDIR)/main
 
 # Base sources (shared by all targets)
 BASE_SRCS := $(SRCDIR)/generateGraph.cpp $(SRCDIR)/generateGraphCSR.cpp $(SRCDIR)/generateChangedEdges.cpp $(SRCDIR)/updateGraphCSR.cpp $(SRCDIR)/generateTestCases.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp \
-             $(SRCDIR)/csrGraph.cpp $(SRCDIR)/stageTimer.cpp $(SRCDIR)/validation.cpp
+             $(SRCDIR)/csrGraph.cpp $(SRCDIR)/stageTimer.cpp $(SRCDIR)/validation.cpp \
+             $(SRCDIR)/changeGenerator.cpp
 
 # Main application (includes sequential SOSP update)
 MAIN_SRCS := $(SRCDIR)/main.cpp $(BASE_SRCS) $(SRCDIR)/sequentialSOSPUpdate.cpp $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/parallelCombinedGraph.cpp
@@ -30,7 +31,7 @@ PARALLEL_STRESS_SRCS := $(SRCDIR)/parallelStressTest.cpp $(BASE_SRCS) $(SRCDIR)/
 PARALLEL_STRESS_OBJS := $(PARALLEL_STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 
 # Input preparation tool
-PREP_SRCS := $(SRCDIR)/mospPrep.cpp $(SRCDIR)/csrGraph.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp
+PREP_SRCS := $(SRCDIR)/mospPrep.cpp $(SRCDIR)/changeGenerator.cpp $(SRCDIR)/csrGraph.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp
 PREP_OBJS := $(PREP_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 
 # Driver for prepared inputs (benchmarks, validation)

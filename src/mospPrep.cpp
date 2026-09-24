@@ -16,6 +16,12 @@
  *   cache <csrPrefix> <binaryPath>
  *       Write the binary cache read by `mosp --cache`.
  *
+ *   changes <csrPrefix> <outDir> [--changes N] [--ins PCT]
+ *           [--mode uniform|targeted|reweight|increase] [--local HOPS]
+ *           [--safe] [--seed S] [--source s] [--wmin a] [--wmax b]
+ *       Generate <outDir>/insert.txt and <outDir>/delete.txt
+ *       (see changeGenerator.h for the modes).
+ *
  *   init <csrPrefix> <outDir> [--source s]
  *       Initial SOSP trees: Dijkstra per objective ->
  *       <outDir>/obj<k>/distancesOriginal.txt, SSSPTreeOriginal.txt.
@@ -26,6 +32,7 @@
  *       SSSPTreeUpdated.txt.
  */
 
+#include "changeGenerator.h"
 #include "csrGraph.h"
 #include "dijkstra.h"
 
@@ -56,6 +63,12 @@ int usage() {
           "       mospPrep widen <inPrefix> <outPrefix> <K> <wmin> <wmax> "
           "<seed>\n"
           "       mospPrep cache <csrPrefix> <binaryPath>\n"
+          "       mospPrep changes <csrPrefix> <outDir> [--changes N] "
+          "[--ins PCT]\n"
+          "                [--mode uniform|targeted|reweight|increase] "
+          "[--local HOPS]\n"
+          "                [--safe] [--seed S] [--source s] [--wmin a] "
+          "[--wmax b]\n"
           "       mospPrep init <csrPrefix> <outDir> [--source s]\n"
           "       mospPrep expected <csrPrefix> <changesDir> <outDir> "
           "[--source s]\n";
@@ -157,6 +170,44 @@ int widen(const string &in, const string &out, int K, int wmin, int wmax,
   return writeCsrGraph(out, graph) ? 0 : 1;
 }
 
+/// Parse "--name value" style options into generator options.
+bool parseChangeOptions(int argc, char **argv, int first,
+                        ChangeGeneratorOptions &opt) {
+  for (int i = first; i < argc; ++i) {
+    string a = argv[i];
+    if (a == "--safe") {
+      opt.safeDeletions = true;
+      continue;
+    }
+    if (i + 1 >= argc) {
+      return false;
+    }
+    string v = argv[++i];
+    if (a == "--changes") {
+      opt.numberOfChanges = atoi(v.c_str());
+    } else if (a == "--ins") {
+      opt.insertionPercentage = atof(v.c_str());
+    } else if (a == "--mode") {
+      if (!parseChangeMode(v, opt.mode)) {
+        return false;
+      }
+    } else if (a == "--local") {
+      opt.localHops = atoi(v.c_str());
+    } else if (a == "--seed") {
+      opt.seed = static_cast<unsigned int>(strtoul(v.c_str(), nullptr, 10));
+    } else if (a == "--source") {
+      opt.source = atoi(v.c_str());
+    } else if (a == "--wmin") {
+      opt.weightMin = atoi(v.c_str());
+    } else if (a == "--wmax") {
+      opt.weightMax = atoi(v.c_str());
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
 int sourceOption(int argc, char **argv, int first) {
   for (int i = first; i + 1 < argc; ++i) {
     if (strcmp(argv[i], "--source") == 0) {
@@ -204,6 +255,22 @@ int main(int argc, char **argv) {
     rc = readCsrGraph(argv[2], graph) && saveCsrGraphBinary(argv[3], graph)
              ? 0
              : 1;
+  } else if (command == "changes" && argc >= 4) {
+    ChangeGeneratorOptions opt;
+    if (!parseChangeOptions(argc, argv, 4, opt)) {
+      return usage();
+    }
+    CsrGraph graph;
+    ChangeBatch batch;
+    string report;
+    const string dir = argv[3];
+    rc = readCsrGraph(argv[2], graph) &&
+                 generateChangeBatch(graph, opt, batch, &report) &&
+                 writeChangeBatch(batch, dir + "/insert.txt",
+                                  dir + "/delete.txt")
+             ? 0
+             : 1;
+    cout << "changes: " << report << "\n";
   } else if (command == "init" && argc >= 4) {
     CsrGraph graph;
     rc = readCsrGraph(argv[2], graph)
