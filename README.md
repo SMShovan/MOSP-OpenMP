@@ -32,7 +32,8 @@ make OPT=                   # original flags: no optimization
 ```
 
 Everything is compiled at `-O3` with `-fopenmp`; header changes trigger
-rebuilds.
+rebuilds. For clangd and other IDE tooling, generate an (untracked)
+`compile_commands.json` with `bear -- make`.
 
 ## Threads and pinning
 
@@ -145,7 +146,9 @@ would disconnect a vertex from the source.
   to 64-bit distances with a parent-recovery pass.
 - **Tracked files:** `data/`, `output/`, `tests/` and `parallelStressTest/`
   hold outputs of earlier runs; `make test` runs everything inside
-  `test-output/` and leaves them untouched.
+  `test-output/` and leaves them untouched, but `./bin/main` and `make run`
+  (below) rewrite the tracked files in `data/`, `output/` and `tests/`
+  (restore them with `git checkout -- data output tests`).
 
 ## Stock pipeline (bin/main)
 
@@ -154,6 +157,11 @@ From the project root:
 ```
 ./bin/main          # or: make run
 ```
+
+It runs in the current directory and overwrites the tracked sample files
+listed below, so `git status` shows them as modified afterwards; run it
+from a scratch directory (as `make test` does in `test-output/`) to keep
+the checkout clean.
 
 The app writes the output graph to:
 - `data/graph.mtx`
