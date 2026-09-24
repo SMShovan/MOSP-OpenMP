@@ -274,7 +274,9 @@ void findBestParent(
         }
 
         long long candidateDistance = distances[candidateParent] + candidateWeight;
-        if (candidateDistance < bestDistance) {
+        // Ties go to the lowest parent id (canonical SOSP tree).
+        if (candidateDistance < bestDistance ||
+            (candidateDistance == bestDistance && candidateParent < bestParent)) {
             bestDistance = candidateDistance;
             bestParent = candidateParent;
         }
@@ -495,6 +497,8 @@ bool sequentialSOSPUpdate(
                 isAffected[v] = true;
                 affectedVertices.push_back(v);
             }
+        } else if (newDistance == distances[v] && v != source && u < parent[v]) {
+            parent[v] = u; // equal distance: the lowest parent id wins
         }
     }
 

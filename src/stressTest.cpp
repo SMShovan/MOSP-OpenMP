@@ -120,9 +120,14 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        // Distances must match Dijkstra; with the lowest-id tie-break the
+        // SSSP trees must match the (canonical) Dijkstra trees exactly too.
         bool match = compareDistanceFiles(
             expectedDir + "/distancesUpdated.txt",
             expectedDir + "/distancesSospUpdate.txt"
+        ) && compareDistanceFiles(
+            expectedDir + "/SSSPTreeUpdated.txt",
+            expectedDir + "/SSSPTreeSospUpdate.txt"
         );
 
         if (match) {

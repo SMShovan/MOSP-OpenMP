@@ -73,10 +73,14 @@ bool runDijkstra(
         for (const auto &edge : graph[u]) {
             int v = edge.to;
             int w = edge.weights[objectiveNumber];
-            if (dist[u] + w < dist[v]) {
-                dist[v] = dist[u] + w;
+            // Ties go to the lowest parent id (canonical SOSP tree).
+            long long candidate = dist[u] + w;
+            if (candidate < dist[v]) {
+                dist[v] = candidate;
                 parent[v] = u;
                 pq.push({dist[v], v});
+            } else if (candidate == dist[v] && v != source && u < parent[v]) {
+                parent[v] = u;
             }
         }
     }
@@ -172,10 +176,14 @@ bool runDijkstraCSR(
         for (const auto &edge : graph[u]) {
             int v = edge.to;
             int w = edge.weights[objectiveNumber];
-            if (dist[u] + w < dist[v]) {
-                dist[v] = dist[u] + w;
+            // Ties go to the lowest parent id (canonical SOSP tree).
+            long long candidate = dist[u] + w;
+            if (candidate < dist[v]) {
+                dist[v] = candidate;
                 parent[v] = u;
                 pq.push({dist[v], v});
+            } else if (candidate == dist[v] && v != source && u < parent[v]) {
+                parent[v] = u;
             }
         }
     }
@@ -249,6 +257,9 @@ void dijkstraCsrGraph(const CsrGraph &graph, int objective, int source,
                 distances[v] = candidate;
                 parent[v] = u;
                 pq.push({candidate, v});
+            } else if (candidate == distances[v] && v != source &&
+                       u < parent[v]) {
+                parent[v] = u; // ties go to the lowest parent id
             }
         }
     }

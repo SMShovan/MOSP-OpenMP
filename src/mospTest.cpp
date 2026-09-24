@@ -6,7 +6,10 @@
  * change batch, runs the update through the public file-based API and
  * checks the result against Dijkstra on the updated graph:
  *   - distances equal (unreachable vertices = INF),
- *   - parent consistency: an existing edge (p,v) with d[p]+w(p,v) == d[v].
+ *   - parent consistency: an existing edge (p,v) with d[p]+w(p,v) == d[v],
+ *   - canonical parents: the lowest id among equal-distance parents, so
+ *     every tree equals the (canonical) Dijkstra tree exactly,
+ *   - determinism: running the parallel update twice gives identical files.
  *
  * Change sets: uniform (connectivity-safe and unsafe), deletions only,
  * disconnecting deletions, insertions only, tree-edge weight increases,
@@ -137,6 +140,11 @@ CaseFiles writeCase(const string &dir, const CsrGraph &graph,
   return files;
 }
 
+/// Output directory of one implementation ("label") for objective k.
+string outputDir(const CaseFiles &files, const string &label, int k) {
+  return files.dir + "/" + label + "/obj" + to_string(k);
+}
+
 using UpdateFunction = function<bool(const CaseFiles &, int objective,
                                      int source, const string &distOut,
                                      const string &treeOut)>;
@@ -149,7 +157,7 @@ bool runAndCheck(const string &label, const UpdateFunction &update,
                  vector<string> *treePaths = nullptr) {
   bool allOk = true;
   for (int k = 0; k < updated.numberOfObjectives; ++k) {
-    string out = files.dir + "/" + label + "/obj" + to_string(k);
+    string out = outputDir(files, label, k);
     string distOut = out + "/distances.txt", treeOut = out + "/tree.txt";
     if (!update(files, k, source, distOut, treeOut)) {
       report(label, false, files.dir + " obj" + to_string(k) + ": call failed");
@@ -161,8 +169,9 @@ bool runAndCheck(const string &label, const UpdateFunction &update,
     readDistances(distOut, updated.numberOfNodes, dist);
     readParents(treeOut, updated.numberOfNodes, parent);
     dijkstraCsrGraph(updated, k, source, refDist, refParent);
-    TreeCheck check = checkSospTree(reverse, k, source, dist, parent, refDist);
-    bool ok = check.ok(false);
+    TreeCheck check =
+        checkSospTree(reverse, k, source, dist, parent, refDist, &refParent);
+    bool ok = check.ok(true);
     report(label, ok, files.dir + " obj" + to_string(k) + ": " + check.summary());
     allOk = allOk && ok;
     if (treePaths != nullptr) {
@@ -230,13 +239,35 @@ void checkCombined(const CaseFiles &files, const vector<string> &trees,
   readDistances(dir + "/distances.txt", n, dist);
   readParents(dir + "/tree.txt", n, parent);
   dijkstraCsrGraph(combined, 0, source, refDist, refParent);
-  TreeCheck check = checkSospTree(reverse, 0, source, dist, parent, refDist);
-  report("combined", check.ok(false), files.dir + ": " + check.summary());
+  TreeCheck check =
+      checkSospTree(reverse, 0, source, dist, parent, refDist, &refParent);
+  report("combined", check.ok(true), files.dir + ": " + check.summary());
 }
 
 // ============================================================================
 // Test sets
 // ============================================================================
+
+/// Run the parallel update a second time; outputs must be identical.
+void checkDeterminism(const CaseFiles &files, const string &firstLabel, int n,
+                      int K, int source) {
+  for (int k = 0; k < K; ++k) {
+    string obj = files.init + "/obj" + to_string(k);
+    string first = outputDir(files, firstLabel, k);
+    string again = outputDir(files, "rerun", k);
+    parallelSOSPUpdate(files.graph, obj + "/distances.txt", obj + "/tree.txt",
+                       files.insert, files.remove, k, source,
+                       again + "/distances.txt", again + "/tree.txt");
+    vector<int> firstTree, againTree;
+    vector<long long> firstDist, againDist;
+    readParents(first + "/tree.txt", n, firstTree);
+    readParents(again + "/tree.txt", n, againTree);
+    readDistances(first + "/distances.txt", n, firstDist);
+    readDistances(again + "/distances.txt", n, againDist);
+    report("determinism", firstTree == againTree && firstDist == againDist,
+           files.dir + " obj" + to_string(k) + ": two runs differ");
+  }
+}
 
 struct ChangeSet {
   string name;
@@ -365,6 +396,8 @@ void runSosp(unsigned int seed) {
                     source, &trees);
         runAndCheck("sequential/" + set.name, sequential, files, updated,
                     reverse, source);
+        checkDeterminism(files, "parallel/" + set.name, graph.numberOfNodes,
+                         graph.numberOfObjectives, source);
         if (static_cast<int>(trees.size()) == graph.numberOfObjectives) {
           checkCombined(files, trees, graph.numberOfNodes, source);
         }

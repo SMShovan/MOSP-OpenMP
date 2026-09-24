@@ -125,9 +125,13 @@ int main(int argc, char **argv) {
       continue;
     }
 
+    // Distances must match Dijkstra; with the lowest-id tie-break the SSSP
+    // trees must match the (canonical) Dijkstra trees exactly as well.
     bool match =
         compareDistanceFiles(expectedDir + "/distancesUpdated.txt",
-                             expectedDir + "/distancesParallelUpdate.txt");
+                             expectedDir + "/distancesParallelUpdate.txt") &&
+        compareDistanceFiles(expectedDir + "/SSSPTreeUpdated.txt",
+                             expectedDir + "/SSSPTreeParallelUpdate.txt");
 
     if (match) {
       ++passCount;
