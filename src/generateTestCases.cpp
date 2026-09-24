@@ -223,5 +223,5 @@ bool generateTestCases(const string &baseDir) {
     }
 
     cout << "\n=== Test Summary: " << passCount << "/10 passed ===\n";
-    return true;
+    return passCount == 10;
 }

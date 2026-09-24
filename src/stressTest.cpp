@@ -13,6 +13,7 @@
 #include "sequentialSOSPUpdate.h"
 #include "updateGraphCSR.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -36,11 +37,20 @@ bool compareDistanceFiles(const string &pathA, const string &pathB) {
 
 } // namespace
 
-int main() {
-    const int totalRuns = 100;
+/**
+ * Usage: stressTest [seed] [runs]
+ *   seed  RNG seed for the run parameters (0 or omitted: random).
+ *   runs  number of random configurations (default 100).
+ */
+int main(int argc, char **argv) {
+    const unsigned int seed =
+        argc > 1 ? static_cast<unsigned int>(strtoul(argv[1], nullptr, 10)) : 0;
+    const int totalRuns = argc > 2 ? atoi(argv[2]) : 100;
     const string baseDir = "stressTest";
 
-    mt19937 rng(random_device{}());
+    const unsigned int runSeed = seed != 0 ? seed : random_device{}();
+    cout << "Seed: " << runSeed << "\n";
+    mt19937 rng(runSeed);
     uniform_int_distribution<int> nodesDist(4, 30);
     uniform_int_distribution<int> objDist(1, 3);
     uniform_int_distribution<int> weightDist(1, 50);

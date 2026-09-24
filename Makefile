@@ -28,7 +28,11 @@ STRESS_OBJS := $(STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 PARALLEL_STRESS_SRCS := $(SRCDIR)/parallelStressTest.cpp $(BASE_SRCS) $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/sequentialSOSPUpdate.cpp
 PARALLEL_STRESS_OBJS := $(PARALLEL_STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 
-.PHONY: all clean run stressTest parallelStressTest
+.PHONY: all clean run stressTest parallelStressTest test
+
+# Recipes use bash with pipefail so piped test output keeps the exit status.
+SHELL := /bin/bash
+.SHELLFLAGS := -o pipefail -c
 
 all: $(APP)
 
@@ -56,8 +60,28 @@ parallelStressTest: $(BINDIR)/parallelStressTest
 $(BINDIR)/parallelStressTest: $(PARALLEL_STRESS_OBJS) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+# --- Tests -------------------------------------------------------------------
+# Everything runs inside $(TESTDIR) so the repository stays clean.
+#   make test                 stock pipeline + 10 test cases + both stress tests
+#   make test TEST_SEED=0     stress tests with a random seed (printed)
+TESTDIR   := test-output
+TEST_SEED ?= 1
+
+test: $(APP) stressTest parallelStressTest
+	@rm -rf $(TESTDIR) && mkdir -p $(TESTDIR)
+	@echo "== bin/main (pipeline + 10 generated test cases)"
+	@cd $(TESTDIR) && ../$(APP) > main.log 2>&1 || { tail -n 30 main.log; exit 1; }
+	@grep "Test Summary" $(TESTDIR)/main.log
+	@echo "== bin/stressTest $(TEST_SEED) (sequential SOSP update, 100 random cases)"
+	@cd $(TESTDIR) && ../$(BINDIR)/stressTest $(TEST_SEED) > stressTest.log 2>&1 || { grep -E "FAIL|ERROR|Seed" stressTest.log; tail -n 2 stressTest.log; exit 1; }
+	@tail -n 1 $(TESTDIR)/stressTest.log
+	@echo "== bin/parallelStressTest $(TEST_SEED) (parallel SOSP update, 100 random cases)"
+	@cd $(TESTDIR) && ../$(BINDIR)/parallelStressTest $(TEST_SEED) > parallelStressTest.log 2>&1 || { grep -E "FAIL|ERROR|Seed" parallelStressTest.log; tail -n 2 parallelStressTest.log; exit 1; }
+	@tail -n 1 $(TESTDIR)/parallelStressTest.log
+	@echo "== all tests passed"
+
 clean:
-	rm -rf $(BINDIR) $(BUILDDIR)
+	rm -rf $(BINDIR) $(BUILDDIR) $(TESTDIR)
 
 run: $(APP)
 	./$(APP)
