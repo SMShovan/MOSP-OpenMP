@@ -30,6 +30,10 @@ STRESS_OBJS := $(STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 PARALLEL_STRESS_SRCS := $(SRCDIR)/parallelStressTest.cpp $(BASE_SRCS) $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/sequentialSOSPUpdate.cpp
 PARALLEL_STRESS_OBJS := $(PARALLEL_STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 
+# Oracle tests (new change sets, combined graph, generator/apply checks)
+TEST_SRCS := $(SRCDIR)/mospTest.cpp $(BASE_SRCS) $(SRCDIR)/sequentialSOSPUpdate.cpp $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/parallelCombinedGraph.cpp
+TEST_OBJS := $(TEST_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
+
 # Input preparation tool
 PREP_SRCS := $(SRCDIR)/mospPrep.cpp $(SRCDIR)/changeGenerator.cpp $(SRCDIR)/csrGraph.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp
 PREP_OBJS := $(PREP_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
@@ -44,7 +48,7 @@ MOSP_OBJS := $(MOSP_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 
-all: $(APP) $(BINDIR)/mosp $(BINDIR)/mospPrep
+all: $(APP) $(BINDIR)/mosp $(BINDIR)/mospPrep $(BINDIR)/mospTest
 
 $(BINDIR) $(BUILDDIR):
 	@mkdir -p $@
@@ -65,6 +69,9 @@ $(BINDIR)/mosp: $(MOSP_OBJS) | $(BINDIR)
 $(BINDIR)/mospPrep: $(PREP_OBJS) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
+$(BINDIR)/mospTest: $(TEST_OBJS) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
 # --- Sequential stress test ---
 stressTest: $(BINDIR)/stressTest
 
@@ -79,12 +86,13 @@ $(BINDIR)/parallelStressTest: $(PARALLEL_STRESS_OBJS) | $(BINDIR)
 
 # --- Tests -------------------------------------------------------------------
 # Everything runs inside $(TESTDIR) so the repository stays clean.
-#   make test                 stock pipeline + 10 test cases + both stress tests
+#   make test                 stock pipeline + 10 test cases + both stress
+#                             tests + the oracle suite (bin/mospTest)
 #   make test TEST_SEED=0     stress tests with a random seed (printed)
 TESTDIR   := test-output
 TEST_SEED ?= 1
 
-test: $(APP) stressTest parallelStressTest
+test: $(APP) stressTest parallelStressTest $(BINDIR)/mospTest
 	@rm -rf $(TESTDIR) && mkdir -p $(TESTDIR)
 	@echo "== bin/main (pipeline + 10 generated test cases)"
 	@cd $(TESTDIR) && ../$(APP) > main.log 2>&1 || { tail -n 30 main.log; exit 1; }
@@ -95,6 +103,9 @@ test: $(APP) stressTest parallelStressTest
 	@echo "== bin/parallelStressTest $(TEST_SEED) (parallel SOSP update, 100 random cases)"
 	@cd $(TESTDIR) && ../$(BINDIR)/parallelStressTest $(TEST_SEED) > parallelStressTest.log 2>&1 || { grep -E "FAIL|ERROR|Seed" parallelStressTest.log; tail -n 2 parallelStressTest.log; exit 1; }
 	@tail -n 1 $(TESTDIR)/parallelStressTest.log
+	@echo "== bin/mospTest --seed $(TEST_SEED) (oracle suite: change sets, combined graph)"
+	@$(BINDIR)/mospTest --seed $(TEST_SEED) --work $(TESTDIR)/mospTest > $(TESTDIR)/mospTest.log 2>&1 || { cat $(TESTDIR)/mospTest.log; exit 1; }
+	@tail -n 1 $(TESTDIR)/mospTest.log
 	@echo "== all tests passed"
 
 clean:
