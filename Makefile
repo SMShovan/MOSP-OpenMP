@@ -14,7 +14,8 @@ BUILDDIR := build
 APP      := $(BINDIR)/main
 
 # Base sources (shared by all targets)
-BASE_SRCS := $(SRCDIR)/generateGraph.cpp $(SRCDIR)/generateGraphCSR.cpp $(SRCDIR)/generateChangedEdges.cpp $(SRCDIR)/updateGraphCSR.cpp $(SRCDIR)/generateTestCases.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp
+BASE_SRCS := $(SRCDIR)/generateGraph.cpp $(SRCDIR)/generateGraphCSR.cpp $(SRCDIR)/generateChangedEdges.cpp $(SRCDIR)/updateGraphCSR.cpp $(SRCDIR)/generateTestCases.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp \
+             $(SRCDIR)/csrGraph.cpp $(SRCDIR)/stageTimer.cpp $(SRCDIR)/validation.cpp
 
 # Main application (includes sequential SOSP update)
 MAIN_SRCS := $(SRCDIR)/main.cpp $(BASE_SRCS) $(SRCDIR)/sequentialSOSPUpdate.cpp $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/parallelCombinedGraph.cpp
@@ -28,13 +29,21 @@ STRESS_OBJS := $(STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 PARALLEL_STRESS_SRCS := $(SRCDIR)/parallelStressTest.cpp $(BASE_SRCS) $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/sequentialSOSPUpdate.cpp
 PARALLEL_STRESS_OBJS := $(PARALLEL_STRESS_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
 
+# Input preparation tool
+PREP_SRCS := $(SRCDIR)/mospPrep.cpp $(SRCDIR)/csrGraph.cpp $(SRCDIR)/Dijkstra.cpp $(SRCDIR)/read.cpp
+PREP_OBJS := $(PREP_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
+
+# Driver for prepared inputs (benchmarks, validation)
+MOSP_SRCS := $(SRCDIR)/mosp.cpp $(BASE_SRCS) $(SRCDIR)/sequentialSOSPUpdate.cpp $(SRCDIR)/parallelSOSPUpdate.cpp $(SRCDIR)/parallelCombinedGraph.cpp
+MOSP_OBJS := $(MOSP_SRCS:$(SRCDIR)/%.cpp=$(BUILDDIR)/%.o)
+
 .PHONY: all clean run stressTest parallelStressTest test
 
 # Recipes use bash with pipefail so piped test output keeps the exit status.
 SHELL := /bin/bash
 .SHELLFLAGS := -o pipefail -c
 
-all: $(APP)
+all: $(APP) $(BINDIR)/mosp $(BINDIR)/mospPrep
 
 $(BINDIR) $(BUILDDIR):
 	@mkdir -p $@
@@ -47,6 +56,13 @@ $(APP): $(MAIN_OBJS) | $(BINDIR)
 # not use it.
 $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+# --- Driver for prepared inputs and preparation tool ---
+$(BINDIR)/mosp: $(MOSP_OBJS) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+$(BINDIR)/mospPrep: $(PREP_OBJS) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # --- Sequential stress test ---
 stressTest: $(BINDIR)/stressTest

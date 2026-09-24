@@ -2,6 +2,9 @@
 #define DIJKSTRA_H
 
 #include <string>
+#include <vector>
+
+struct CsrGraph;
 
 /**
  * @brief Run single-objective Dijkstra on an MTX file.
@@ -38,5 +41,18 @@ bool runDijkstraCSR(
     const std::string &distanceOutputPath = "output/distancesCsr.txt",
     const std::string &treeOutputPath = "output/SSSPTreeCsr.txt"
 );
+
+/**
+ * @brief Single-objective Dijkstra on an in-memory CSR graph.
+ *
+ * @param graph       Out-edge CSR graph.
+ * @param objective   Objective index (0-based) used as the edge weight.
+ * @param source      Source vertex.
+ * @param distances   Output distances (DISTANCE_INF when unreachable).
+ * @param parent      Output parent array (-1 for the source/unreachable).
+ */
+void dijkstraCsrGraph(const CsrGraph &graph, int objective, int source,
+                      std::vector<long long> &distances,
+                      std::vector<int> &parent);
 
 #endif

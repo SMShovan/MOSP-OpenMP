@@ -8,3 +8,4 @@
 # Profiler reports
 *.nsys-rep
 *.sqlite
+/bench-output/

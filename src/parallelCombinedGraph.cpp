@@ -50,6 +50,7 @@
 
 #include "parallelSOSPUpdate.h"
 #include "read.h"
+#include "stageTimer.h"
 
 #include <omp.h>
 
@@ -126,6 +127,7 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
   // ========================================================================
 
   // --- 0a. Determine numberOfNodes from the CSR ---
+  ScopedStage readStage("comb/0a_read_csr_for_n");
   Graph baseGraph;
   int numberOfObjectives = 0;
   if (!readCSR(originalCsrPrefix, baseGraph, numberOfObjectives)) {
@@ -144,7 +146,10 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
     return false;
   }
 
+  readStage.stop();
+
   // --- 0b. Read K parent arrays ---
+  ScopedStage treeStage("comb/0b_read_trees_text");
   vector<vector<int>> parents(K);
   for (int k = 0; k < K; ++k) {
     if (!readParent(treeInputPaths[k], parents[k], numberOfNodes)) {
@@ -159,6 +164,9 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
   // For each tree k and each vertex v (v != source, parent_k[v] != -1),
   // the tree edge is (parent_k[v] → v).
   // We count how many trees each directed edge belongs to, then assign weight.
+
+  treeStage.stop();
+  ScopedStage mapStage("comb/1_membership_map_compute");
 
   // Outer loop over K trees is only size 3 (or small K) — parallelize the
   // inner loop over vertices instead.
@@ -195,6 +203,10 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
   // ========================================================================
   // PHASE 2: WRITE TEMPORARY FILES FOR parallelSOSPUpdate
   // ========================================================================
+
+  mapStage.stop();
+  recordCounter("comb/edges", edgeMembership.size());
+  ScopedStage writeStage("comb/2_write_temp_files");
 
   // Create the work directory
   filesystem::create_directories(workDir);
@@ -330,13 +342,19 @@ bool parallelCombinedGraph(const string &originalCsrPrefix,
   // parallelSOSPUpdate to relax every combined edge from the source outward,
   // and Phase 2 propagates like Chaotic Bellman-Ford until convergence.
 
+  writeStage.stop();
+
   cout << "parallelCombinedGraph: running parallelSOSPUpdate on combined graph"
        << " (" << edgeMembership.size() << " edges, " << numberOfNodes
        << " vertices)...\n";
 
-  if (!parallelSOSPUpdate(
-          tempCsrPrefix, blankDistPath, blankTreePath, insertPath, deletePath,
-          /*objectiveIndex=*/0, source, distancesOutputPath, treeOutputPath)) {
+  const string outerPrefix = stagePrefix();
+  setStagePrefix(outerPrefix + "comb/");
+  bool updated = parallelSOSPUpdate(
+      tempCsrPrefix, blankDistPath, blankTreePath, insertPath, deletePath,
+      /*objectiveIndex=*/0, source, distancesOutputPath, treeOutputPath);
+  setStagePrefix(outerPrefix);
+  if (!updated) {
     cout << "Error: parallelSOSPUpdate failed on combined graph.\n";
     return false;
   }

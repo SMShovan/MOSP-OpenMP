@@ -38,6 +38,7 @@
 #include "parallelSOSPUpdate.h"
 
 #include "read.h"
+#include "stageTimer.h"
 
 #include <omp.h>
 
@@ -224,6 +225,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   // ========================================================================
 
   // --- 0a. Read original graph from CSR and determine dimensions ---
+  ScopedStage readStage("sosp/0a_read_csr_text");
   Graph originalGraph;
   int numberOfObjectives = 0;
   if (!readCSR(originalCsrPrefix, originalGraph, numberOfObjectives)) {
@@ -247,14 +249,19 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     return false;
   }
 
+  readStage.stop();
+
   // --- 0b. Build forward and reverse adjacency lists ---
+  ScopedStage adjacencyStage("sosp/0b_build_adjacency");
   vector<vector<WeightedNeighbor>> outAdjacency;
   vector<vector<WeightedNeighbor>> inAdjacency;
   buildAdjacencyLists(originalGraph, objectiveIndex, outAdjacency, inAdjacency);
 
   originalGraph.clear();
+  adjacencyStage.stop();
 
   // --- 0c. Read original distances and parent arrays ---
+  ScopedStage treeStage("sosp/0c_read_tree_text");
   vector<long long> distances;
   if (!readDistancesFromFile(distancesInputPath, distances, numberOfNodes,
                              INF_VALUE)) {
@@ -266,7 +273,10 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     return false;
   }
 
+  treeStage.stop();
+
   // --- 0d. Read inserted and deleted edges ---
+  ScopedStage changesStage("sosp/0d_read_changes_text");
   struct InsertedEdge {
     int from;
     int to;
@@ -321,7 +331,10 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     }
   }
 
+  changesStage.stop();
+
   // --- 0e. Apply topological changes to adjacency lists (Sequential) ---
+  ScopedStage applyStage("sosp/0e_apply_changes");
   struct WeightIncrease {
     int from;
     int to;
@@ -364,9 +377,12 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     }
   }
 
+  applyStage.stop();
+
   // ========================================================================
   // PHASE 1: PROCESS CHANGED EDGES (Sequential — tiny batch, order-dependent)
   // ========================================================================
+  ScopedStage step1Stage("sosp/1_process_changes_compute");
 
   // Use char arrays instead of bool vectors for atomic compare-exchange
   vector<char> isAffected(numberOfNodes, 0);
@@ -449,9 +465,13 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     }
   }
 
+  step1Stage.stop();
+  recordCounter("sosp/initial_affected", affectedVertices.size());
+
   // ========================================================================
   // PHASE 2: PROPAGATE THE UPDATE (Parallel — OpenMP)
   // ========================================================================
+  ScopedStage propagateStage("sosp/2_propagate_compute");
   // Iteratively propagate changes through the graph until convergence.
   // Uses Chaotic Bellman-Ford semantics: concurrent reads of distances[]
   // during findBestParent are benign races that do not affect final
@@ -558,6 +578,9 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     }
   }
 
+  propagateStage.stop();
+  recordCounter("sosp/iterations", iterationCount);
+
   if (iterationCount >= maxIterations && !affectedVertices.empty()) {
     cout << "Warning: SOSP update reached maximum iteration limit ("
          << maxIterations << "). Running reachability check.\n";
@@ -566,6 +589,7 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
   // ========================================================================
   // POST-PROCESSING: REACHABILITY CHECK (Parallel BFS)
   // ========================================================================
+  ScopedStage bfsStage("sosp/3_bfs_reachability_compute");
   // Level-synchronous parallel BFS from the source vertex.
   // Uses atomic compare-exchange on a char array for visited flags.
 
@@ -620,9 +644,12 @@ bool parallelSOSPUpdate(const string &originalCsrPrefix,
     }
   }
 
+  bfsStage.stop();
+
   // ========================================================================
   // WRITE OUTPUT (Sequential — I/O)
   // ========================================================================
+  ScopedStage writeStage("sosp/5_write_text");
 
   filesystem::path distOutPath(distancesOutputPath);
   if (!distOutPath.parent_path().empty()) {

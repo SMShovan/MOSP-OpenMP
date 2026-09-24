@@ -4,6 +4,8 @@
  */
 
 #include "dijkstra.h"
+
+#include "csrGraph.h"
 #include "read.h"
 
 #include <filesystem>
@@ -215,3 +217,39 @@ bool runDijkstraCSR(
     return true;
 }
 
+/**
+ * @brief Single-objective Dijkstra on an in-memory CSR graph.
+ *
+ * @see dijkstra.h
+ */
+void dijkstraCsrGraph(const CsrGraph &graph, int objective, int source,
+                      vector<long long> &distances, vector<int> &parent) {
+    const int n = graph.numberOfNodes;
+    distances.assign(n, DISTANCE_INF);
+    parent.assign(n, -1);
+    if (source < 0 || source >= n) {
+        return;
+    }
+
+    using Node = pair<long long, int>;
+    priority_queue<Node, vector<Node>, greater<Node>> pq;
+    distances[source] = 0;
+    pq.push({0, source});
+
+    while (!pq.empty()) {
+        auto [d, u] = pq.top();
+        pq.pop();
+        if (d != distances[u]) {
+            continue;
+        }
+        for (int e = graph.rowPtr[u]; e < graph.rowPtr[u + 1]; ++e) {
+            int v = graph.colInd[e];
+            long long candidate = d + graph.weight(e, objective);
+            if (candidate < distances[v]) {
+                distances[v] = candidate;
+                parent[v] = u;
+                pq.push({candidate, v});
+            }
+        }
+    }
+}
