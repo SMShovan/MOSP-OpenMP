@@ -359,7 +359,8 @@ bool writeChangeBatch(const ChangeBatch &batch, const string &insertPath,
   }
   ofstream insertFile(insertPath), deleteFile(deletePath);
   if (!insertFile.is_open() || !deleteFile.is_open()) {
-    cout << "Error: Could not open change-edge output files for writing.\n";
+    cout << "Error: Could not open change-edge output file for writing: "
+         << (insertFile.is_open() ? deletePath : insertPath) << "\n";
     return false;
   }
   const int K = batch.numberOfObjectives;
@@ -373,5 +374,12 @@ bool writeChangeBatch(const ChangeBatch &batch, const string &insertPath,
   for (int i = 0; i < batch.numberOfDeletes(); ++i) {
     deleteFile << batch.deleteFrom[i] << " " << batch.deleteTo[i] << "\n";
   }
-  return insertFile.good() && deleteFile.good();
+  insertFile.close();
+  deleteFile.close();
+  if (insertFile.fail() || deleteFile.fail()) {
+    cout << "Error: Could not write change-edge output file: "
+         << (insertFile.fail() ? insertPath : deletePath) << "\n";
+    return false;
+  }
+  return true;
 }
