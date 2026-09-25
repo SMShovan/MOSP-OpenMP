@@ -36,15 +36,18 @@
 #include <algorithm>
 #include <chrono>
 #include <climits>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -604,8 +607,29 @@ void runRegressions(unsigned int) {
   batch.deleteTo = {3};
   CsrGraph updated;
   MospResult result;
+  // A watchdog turns a looping walk into a failed check instead of a hang.
+  std::mutex watchdogMutex;
+  std::condition_variable watchdogWake;
+  bool finished = false;
+  std::thread watchdog([&] {
+    std::unique_lock<std::mutex> lock(watchdogMutex);
+    if (!watchdogWake.wait_for(lock, std::chrono::seconds(60),
+                               [&] { return finished; })) {
+      // cout may be redirected to a buffer that _Exit would discard.
+      cerr << "  FAIL regression/cyclic-tree: mospUpdate did not return "
+              "within 60 s (the invalidation walk loops on a parent cycle)"
+           << endl;
+      std::_Exit(1);
+    }
+  });
   const bool accepted = mospUpdate(graph, batch, {0, 6, 6, 5}, {-1, 2, 1, 0},
                                    MospOptions(), updated, result);
+  {
+    std::lock_guard<std::mutex> lock(watchdogMutex);
+    finished = true;
+  }
+  watchdogWake.notify_one();
+  watchdog.join();
   report("regression/cyclic-tree", !accepted,
          "a cyclic input tree was accepted");
   checkPipeline(g_work + "/regression_acyclic", graph, batch, 0, {});
