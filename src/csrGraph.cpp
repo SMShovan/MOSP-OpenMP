@@ -394,8 +394,14 @@ bool resolveObjectives(CsrGraph &graph, int requested) {
     graph.numberOfObjectives = requested;
     return true;
   }
-  cout << "Error: the graph has no edges, so the number of objectives "
-          "cannot be inferred from its values file (pass -k K).\n";
+  if (graph.numberOfEdges() == 0 && requested != 0) {
+    cout << "Error: -k " << requested
+         << " is out of range; pass -k K with 1 <= K <= 32.\n";
+  } else {
+    cout << "Error: the graph has no edges, so the number of objectives "
+            "cannot be inferred from its values file (pass -k K with "
+            "1 <= K <= 32).\n";
+  }
   return false;
 }
 
